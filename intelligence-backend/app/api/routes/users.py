@@ -16,6 +16,20 @@ from app.schemas import UserCreate, UserUpdate, UserOut
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+def _primary_owner_id(org_id: int, db: Session) -> int | None:
+    """
+    El owner fundador de la organización: el más antiguo (menor id) con rol owner.
+    Es el único que puede degradar o desactivar a otro owner — así ningún owner
+    puede quitar a otro owner (ni a sí mismo lo puede quitar un tercero).
+    """
+    return db.scalar(
+        select(User.id)
+        .where(User.org_id == org_id, User.role == UserRole.owner)
+        .order_by(User.id)
+        .limit(1)
+    )
+
+
 @router.get("", response_model=list[UserOut])
 def list_users(
     current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
@@ -74,8 +88,15 @@ def update_user(
     if data.role == UserRole.owner and current.role != UserRole.owner:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Solo un owner puede asignar el rol owner")
 
-    # No dejar la organización sin ningún owner activo
+    # Degradar o desactivar a un owner: solo lo puede hacer el owner fundador
     if target.role == UserRole.owner and (data.role and data.role != UserRole.owner or data.is_active is False):
+        if current.id != _primary_owner_id(current.org_id, db):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Solo el owner fundador de la organización puede modificar a otro owner",
+            )
+
+        # No dejar la organización sin ningún owner activo
         owners_activos = db.scalars(
             select(User).where(
                 User.org_id == current.org_id,
