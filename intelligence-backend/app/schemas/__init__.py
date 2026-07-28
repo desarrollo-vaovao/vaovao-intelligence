@@ -5,7 +5,7 @@ Separados de los modelos ORM a propósito (nunca exponemos hashed_password, etc.
 import enum
 from datetime import datetime, date
 
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
 from app.models import UserRole, ClientType
 
@@ -96,6 +96,13 @@ class AdAccountCreate(BaseModel):
     label: str = Field(min_length=1, max_length=80)
     meta_ad_account_id: str = Field(min_length=3, max_length=60)
     recipient_emails: list[EmailStr] = Field(default_factory=list)
+
+    @field_validator("label", "meta_ad_account_id")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        # Copiar/pegar desde Excel/Sheets suele meter tabs o espacios de sobra,
+        # y eso rompe la URL al llamar a la Graph API (ver httpx.InvalidURL).
+        return v.strip()
 
 
 class AdAccountOut(BaseModel):

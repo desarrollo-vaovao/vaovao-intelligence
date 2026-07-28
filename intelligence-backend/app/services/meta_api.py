@@ -67,6 +67,8 @@ def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
         return False, str(e)
     except httpx.HTTPError as e:
         return False, f"Error de red: {e}"
+    except httpx.InvalidURL:
+        return False, "ID de cuenta inválido (revisa que no tenga espacios ni caracteres extra)"
 
 
 def get_campaigns(client: httpx.Client, token: str, ad_account_id: str) -> list[dict]:
