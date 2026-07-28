@@ -1,0 +1,109 @@
+"""
+Modelos ORM — el esquema multi-tenant de VaoVao Intelligence.
+
+Jerarquía:
+    Organization (el "tenant" — VaoVao, o cada agencia si algún día es producto)
+      └── User      (las personas que entran a la plataforma, con rol)
+      └── Client    (los clientes de la agencia — reemplaza el clients.js)
+            └── AdAccount  (cuentas publicitarias de Meta; una o varias por cliente)
+
+Todo cuelga de Organization → así el aislamiento por tenant es natural:
+cada query filtra por org_id y nadie ve datos de otra organización.
+"""
+import enum
+from datetime import datetime, timezone
+
+from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class UserRole(str, enum.Enum):
+    owner = "owner"     # dueño de la organización
+    admin = "admin"     # puede gestionar clientes y usuarios
+    member = "member"   # uso normal (ej. el traficker)
+
+
+class ClientType(str, enum.Enum):
+    single = "single"               # un solo ad account
+    multi_station = "multi_station" # varias estaciones/países
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # ── Credenciales de Meta (el "espacio" preparado para conectar luego) ──
+    # El token se guarda CIFRADO (ver core/crypto.py). Nunca en texto plano.
+    meta_app_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    meta_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    full_name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.member)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="users")
+
+
+class Client(Base):
+    __tablename__ = "clients"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    type: Mapped[ClientType] = mapped_column(Enum(ClientType), default=ClientType.single)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="clients")
+    ad_accounts: Mapped[list["AdAccount"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
+
+
+class AdAccount(Base):
+    __tablename__ = "ad_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str] = mapped_column(String(80))            # ej. "Guatemala", "Panamá", o "Principal"
+    meta_ad_account_id: Mapped[str] = mapped_column(String(60))  # ej. "act_1234567890"
+    # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
+    recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    client: Mapped["Client"] = relationship(back_populates="ad_accounts")
+
+class FacebookConnection(Base):
+    """Conexión de Facebook de un usuario (una por usuario). Token cifrado."""
+    __tablename__ = "facebook_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    fb_user_id: Mapped[str] = mapped_column(String(60))
+    fb_name: Mapped[str] = mapped_column(String(160))
+    token_encrypted: Mapped[str] = mapped_column(String(700))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
