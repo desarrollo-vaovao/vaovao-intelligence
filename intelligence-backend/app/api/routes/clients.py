@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.models import User, Client, AdAccount, UserRole
-from app.schemas import ClientCreate, ClientUpdate, ClientOut, AdAccountCreate, AdAccountOut
+from app.schemas import (
+    ClientCreate,
+    ClientUpdate,
+    ClientOut,
+    AdAccountCreate,
+    AdAccountUpdate,
+    AdAccountOut,
+)
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -108,6 +115,31 @@ def add_ad_account(
         recipient_emails=[str(e) for e in data.recipient_emails],
     )
     db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+@router.patch("/{client_id}/ad-accounts/{account_id}", response_model=AdAccountOut)
+def update_ad_account(
+    client_id: int,
+    account_id: int,
+    data: AdAccountUpdate,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    client = _get_owned_client(client_id, current, db)
+    account = next((a for a in client.ad_accounts if a.id == account_id), None)
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cuenta no encontrada")
+
+    if data.label is not None:
+        account.label = data.label
+    if data.meta_ad_account_id is not None:
+        account.meta_ad_account_id = data.meta_ad_account_id
+    if data.recipient_emails is not None:
+        account.recipient_emails = [str(e) for e in data.recipient_emails]
+
     db.commit()
     db.refresh(account)
     return account

@@ -111,6 +111,18 @@ class AdAccountCreate(BaseModel):
         return v.strip()
 
 
+class AdAccountUpdate(BaseModel):
+    """Actualización parcial de una cuenta publicitaria."""
+    label: str | None = Field(default=None, min_length=1, max_length=80)
+    meta_ad_account_id: str | None = Field(default=None, min_length=3, max_length=60)
+    recipient_emails: list[EmailStr] | None = None
+
+    @field_validator("label", "meta_ad_account_id")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        return v.strip() if v is not None else v
+
+
 class AdAccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

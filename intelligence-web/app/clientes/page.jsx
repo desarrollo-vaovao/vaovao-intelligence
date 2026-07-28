@@ -11,6 +11,7 @@ export default function ClientesPage() {
   const [deleteTarget, setDeleteTarget] = useState(null); // cliente a eliminar
   const [editTarget, setEditTarget] = useState(null); // cliente a editar
   const [deleteAccountTarget, setDeleteAccountTarget] = useState(null); // { client, account } a eliminar
+  const [editAccountTarget, setEditAccountTarget] = useState(null); // { client, account } a editar
   const [access, setAccess] = useState({}); // resultado de "Probar acceso" por cuenta
   const [testing, setTesting] = useState(null); // id de cuenta que se está probando
 
@@ -73,7 +74,7 @@ export default function ClientesPage() {
               {c.ad_accounts.length > 0 && (
                 <table className="table">
                   <thead>
-                    <tr><th>Etiqueta</th><th>ID de cuenta</th><th>Destinatarios</th><th>Acceso Meta</th><th></th></tr>
+                    <tr><th>Etiqueta</th><th>ID de cuenta</th><th>Destinatarios</th><th>Acceso Meta</th><th></th><th></th></tr>
                   </thead>
                   <tbody>
                     {c.ad_accounts.map((a) => {
@@ -106,6 +107,16 @@ export default function ClientesPage() {
                                 {res.detail}
                               </div>
                             )}
+                          </td>
+                          <td>
+                            <button
+                              className="icon-btn"
+                              title="Editar cuenta"
+                              aria-label="Editar cuenta"
+                              onClick={() => setEditAccountTarget({ client: c, account: a })}
+                            >
+                              <PencilIcon />
+                            </button>
                           </td>
                           <td>
                             <button
@@ -150,6 +161,14 @@ export default function ClientesPage() {
           account={deleteAccountTarget.account}
           onClose={() => setDeleteAccountTarget(null)}
           onDone={() => { setDeleteAccountTarget(null); load(); }}
+        />
+      )}
+      {editAccountTarget && (
+        <EditAdAccountModal
+          client={editAccountTarget.client}
+          account={editAccountTarget.account}
+          onClose={() => setEditAccountTarget(null)}
+          onDone={() => { setEditAccountTarget(null); load(); }}
         />
       )}
     </Shell>
@@ -310,6 +329,48 @@ function DeleteAdAccountModal({ client, account, onClose, onDone }) {
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="btn btn-danger" onClick={confirmDelete} disabled={busy}>
             {busy ? "Eliminando…" : "Eliminar cuenta"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditAdAccountModal({ client, account, onClose, onDone }) {
+  const [label, setLabel] = useState(account.label);
+  const [accId, setAccId] = useState(account.meta_ad_account_id);
+  const [emails, setEmails] = useState(account.recipient_emails.join(", "));
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  async function save() {
+    setErr(""); setBusy(true);
+    const recipient_emails = emails.split(",").map((s) => s.trim()).filter(Boolean);
+    try {
+      await api.updateAdAccount(client.id, account.id, { label, meta_ad_account_id: accId, recipient_emails });
+      onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Editar cuenta — {client.name}</h2>
+        {err && <div className="err">{err}</div>}
+        <div className="field">
+          <label>Etiqueta</label>
+          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ej. Guatemala, Principal" />
+        </div>
+        <div className="field">
+          <label>ID de cuenta publicitaria</label>
+          <input className="input mono" value={accId} onChange={(e) => setAccId(e.target.value)} placeholder="act_1234567890" />
+        </div>
+        <div className="field">
+          <label>Correos que reciben el reporte (separados por coma)</label>
+          <input className="input" value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="cliente@correo.com, traf@vaovao.co" />
+        </div>
+        <div className="row" style={{ marginTop: 18 }}>
+          <div className="spacer" />
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy || !label.trim() || !accId.trim()}>
+            {busy ? "Guardando…" : "Guardar cambios"}
           </button>
         </div>
       </div>
