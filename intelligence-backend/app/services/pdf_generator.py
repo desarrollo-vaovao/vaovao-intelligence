@@ -24,11 +24,11 @@ def fmt_number(n) -> str:
         return "—"
 
 
-def fmt_currency(n) -> str:
+def fmt_currency(n, symbol: str = "$") -> str:
     if not n:
         return "—"
     try:
-        return f"${float(n):,.2f}"
+        return f"{symbol}{float(n):,.2f}"
     except (TypeError, ValueError):
         return "—"
 
@@ -81,12 +81,12 @@ def _find_like(insights: dict):
     return None
 
 
-def metrics_by_objective(objective: str, insights: dict) -> list[dict]:
+def metrics_by_objective(objective: str, insights: dict, currency_symbol: str = "$") -> list[dict]:
     obj = (objective or "").upper()
     if obj == "MESSAGES":
         conv = insights.get("messaging_conversation_started_7d")
         spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(conv)) if spend and conv else "—"
+        cost = fmt_currency(float(spend) / float(conv), currency_symbol) if spend and conv else "—"
         return [
             {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
             {"label": "Conversaciones", "value": fmt_number(conv)},
@@ -95,7 +95,7 @@ def metrics_by_objective(objective: str, insights: dict) -> list[dict]:
     if obj == "POST_ENGAGEMENT":
         eng = insights.get("post_engagement")
         spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(eng)) if spend and eng else "—"
+        cost = fmt_currency(float(spend) / float(eng), currency_symbol) if spend and eng else "—"
         return [
             {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
             {"label": "Interacciones", "value": fmt_number(eng)},
@@ -104,7 +104,7 @@ def metrics_by_objective(objective: str, insights: dict) -> list[dict]:
     if obj == "PAGE_LIKES":
         likes = _find_like(insights)
         spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(likes)) if spend and likes else "—"
+        cost = fmt_currency(float(spend) / float(likes), currency_symbol) if spend and likes else "—"
         return [
             {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
             {"label": "Seguidores", "value": fmt_number(likes)},
@@ -116,14 +116,14 @@ def metrics_by_objective(objective: str, insights: dict) -> list[dict]:
             {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
             {"label": "Alcance", "value": fmt_number(insights.get("reach"))},
             {"label": "Frecuencia", "value": f"{float(freq):.2f}" if freq else "—"},
-            {"label": "CPM", "value": fmt_currency(insights.get("cpm"))},
+            {"label": "CPM", "value": fmt_currency(insights.get("cpm"), currency_symbol)},
         ]
     # Default: tráfico / clics
     return [
         {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
         {"label": "Clics", "value": fmt_number(insights.get("clicks"))},
         {"label": "CTR", "value": fmt_percent(insights.get("ctr"))},
-        {"label": "CPC", "value": fmt_currency(insights.get("cpc"))},
+        {"label": "CPC", "value": fmt_currency(insights.get("cpc"), currency_symbol)},
     ]
 
 
@@ -138,16 +138,16 @@ def ad_main_metric(objective: str, ins: dict) -> str:
     return f"{fmt_number(ins.get('clicks'))} clics"
 
 
-def ad_cost_metric(objective: str, ins: dict) -> str:
+def ad_cost_metric(objective: str, ins: dict, currency_symbol: str = "$") -> str:
     obj = (objective or "").upper()
     if obj == "MESSAGES" and ins.get("spend") and ins.get("messaging_conversation_started_7d"):
-        return fmt_currency(float(ins["spend"]) / float(ins["messaging_conversation_started_7d"]))
-    return fmt_currency(ins.get("cpc"))
+        return fmt_currency(float(ins["spend"]) / float(ins["messaging_conversation_started_7d"]), currency_symbol)
+    return fmt_currency(ins.get("cpc"), currency_symbol)
 
 
 # ── Render de una tarjeta de campaña ──────────────────────────
-def render_campaign_card(campaign: dict) -> str:
-    metrics = metrics_by_objective(campaign.get("objective"), campaign.get("insights", {}))
+def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
+    metrics = metrics_by_objective(campaign.get("objective"), campaign.get("insights", {}), currency_symbol)
     ads = campaign.get("ads") or []
     best_ad = ads[0] if ads else None
     other_ads = ads[1:4]
@@ -171,7 +171,7 @@ def render_campaign_card(campaign: dict) -> str:
             f'<span style="color:#833AB4;font-weight:500;">● {best_ad.get("name","")}</span>'
             f'<span style="color:#aaa;display:flex;gap:8px;">'
             f'<span>{ad_main_metric(campaign.get("objective"), best_ad.get("insights", {}))}</span>'
-            f'<span>{ad_cost_metric(campaign.get("objective"), best_ad.get("insights", {}))}</span>'
+            f'<span>{ad_cost_metric(campaign.get("objective"), best_ad.get("insights", {}), currency_symbol)}</span>'
             f'</span></div>'
         )
 
@@ -180,7 +180,7 @@ def render_campaign_card(campaign: dict) -> str:
         f'<span style="color:#888;">○ {ad.get("name","")}</span>'
         f'<span style="color:#aaa;display:flex;gap:8px;">'
         f'<span>{ad_main_metric(campaign.get("objective"), ad.get("insights", {}))}</span>'
-        f'<span>{ad_cost_metric(campaign.get("objective"), ad.get("insights", {}))}</span>'
+        f'<span>{ad_cost_metric(campaign.get("objective"), ad.get("insights", {}), currency_symbol)}</span>'
         f'</span></div>'
         for ad in other_ads
     )
@@ -212,7 +212,8 @@ def render_campaign_card(campaign: dict) -> str:
 
 # ── Render de una página (estación o reporte único) ───────────
 def render_station_page(station: dict, client_name: str, period: str,
-                        station_index: int, total_stations: int) -> str:
+                        station_index: int, total_stations: int,
+                        currency_symbol: str = "$") -> str:
     station_id = station.get("station_id")
     station_label = station.get("station_label")
     campaigns = station.get("campaigns", [])
@@ -230,7 +231,7 @@ def render_station_page(station: dict, client_name: str, period: str,
         budget_block = f"""
             <div style="flex:1;">
               <div style="font-size:10px;color:#888;margin-bottom:2px;">Presupuesto del período</div>
-              <div style="font-size:24px;font-weight:600;color:#111;line-height:1.1;">{fmt_currency(budget)}</div>
+              <div style="font-size:24px;font-weight:600;color:#111;line-height:1.1;">{fmt_currency(budget, currency_symbol)}</div>
               <div style="font-size:10px;color:#aaa;margin-top:3px;">Aprobado</div>
             </div>
             <div style="width:0.5px;background:#e0e0e0;align-self:stretch;"></div>"""
@@ -242,7 +243,7 @@ def render_station_page(station: dict, client_name: str, period: str,
             <div style="flex:2;">
               <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:5px;">
                 <span>Ejecución del presupuesto</span>
-                <span>{fmt_currency(total_spend)} / {fmt_currency(budget)}</span>
+                <span>{fmt_currency(total_spend, currency_symbol)} / {fmt_currency(budget, currency_symbol)}</span>
               </div>
               <div style="height:7px;background:#f0f0f0;border-radius:99px;overflow:hidden;">
                 <div style="height:100%;width:{pct}%;background:linear-gradient(90deg,rgba(131,58,180,1) 0%,rgba(253,29,29,1) 50%,rgba(252,176,69,1) 100%);border-radius:99px;"></div>
@@ -258,12 +259,12 @@ def render_station_page(station: dict, client_name: str, period: str,
                   <span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:500;{objective_badge(c.get("objective"))}">{objective_label(c.get("objective"))}</span>
                 </td>
                 <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;color:#888;">{len(c.get("ads") or [])} anuncios</td>
-                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;font-weight:500;color:#111;">{fmt_currency(c.get("spend"))}</td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;font-weight:500;color:#111;">{fmt_currency(c.get("spend"), currency_symbol)}</td>
               </tr>"""
         for c in campaigns
     )
 
-    cards = "".join(render_campaign_card(c) for c in campaigns)
+    cards = "".join(render_campaign_card(c, currency_symbol) for c in campaigns)
 
     return f"""
     <div style="width:100%;background:#fff;page-break-after:always;">
@@ -286,7 +287,7 @@ def render_station_page(station: dict, client_name: str, period: str,
           {budget_block}
           <div style="flex:1;">
             <div style="font-size:10px;color:#888;margin-bottom:2px;">Total consumido</div>
-            <div style="font-size:24px;font-weight:600;color:#111;line-height:1.1;">{fmt_currency(total_spend)}</div>
+            <div style="font-size:24px;font-weight:600;color:#111;line-height:1.1;">{fmt_currency(total_spend, currency_symbol)}</div>
             <div style="font-size:10px;color:#aaa;margin-top:3px;">Al corte del período</div>
           </div>
           {pct_block}
@@ -329,11 +330,12 @@ def generate_report_html(report_data: dict) -> str:
     """Arma el HTML completo del reporte (una página por estación, o una sola)."""
     client_name = report_data.get("client_name", "")
     period = report_data.get("period", "")
+    currency_symbol = report_data.get("currency_symbol", "$")
 
     if report_data.get("type") == "multi-station":
         stations = report_data.get("stations", [])
         pages = "".join(
-            render_station_page(st, client_name, period, i + 1, len(stations))
+            render_station_page(st, client_name, period, i + 1, len(stations), currency_symbol)
             for i, st in enumerate(stations)
         )
     else:
@@ -342,7 +344,7 @@ def generate_report_html(report_data: dict) -> str:
              "campaigns": report_data.get("campaigns", []),
              "total_spend": report_data.get("total_spend", 0),
              "budget": report_data.get("budget")},
-            client_name, period, 1, 1,
+            client_name, period, 1, 1, currency_symbol,
         )
 
     return f"""<!DOCTYPE html>

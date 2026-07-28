@@ -13,14 +13,21 @@ Mejoras respecto al Node:
 - El token llega como parámetro (el de la organización o el del usuario), no de una env suelta.
 - check_account_access() VERIFICA que un token puede leer una cuenta.
 - list_ad_accounts() cubre acceso directo Y cuentas del portafolio comercial.
+- Todas las llamadas a la Graph API son concurrentes (asyncio.gather), no una por una:
+  con muchas campañas/anuncios, hacerlas secuenciales tardaba varios segundos de más.
 """
 import os
 import json
+import asyncio
 import httpx
 
 API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 TIMEOUT = httpx.Timeout(30.0)
+
+# Cuántas llamadas a la Graph API dejamos en vuelo al mismo tiempo.
+# Sin límite se puede topar con el rate limit de Meta si hay muchos anuncios.
+_MAX_CONCURRENCY = 8
 
 # Métricas que pedimos según el objetivo de la campaña (igual que en Node)
 METRICS_BY_OBJECTIVE = {
@@ -43,10 +50,12 @@ def _metrics_for(objective: str) -> list[str]:
     return METRICS_BY_OBJECTIVE.get(objective, METRICS_BY_OBJECTIVE["DEFAULT"])
 
 
-def _get(client: httpx.Client, path: str, token: str, params: dict) -> dict:
+async def _get(client: httpx.AsyncClient, sem: asyncio.Semaphore, path: str,
+                token: str, params: dict) -> dict:
     """GET a la Graph API con el token. Devuelve el JSON o lanza MetaApiError."""
     params = {**params, "access_token": token}
-    resp = client.get(f"{BASE_URL}/{path}", params=params)
+    async with sem:
+        resp = await client.get(f"{BASE_URL}/{path}", params=params)
     data = resp.json()
     if resp.status_code != 200:
         err = (data.get("error") or {}).get("message", "Error desconocido de Meta")
@@ -54,26 +63,28 @@ def _get(client: httpx.Client, path: str, token: str, params: dict) -> dict:
     return data
 
 
-def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
+async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
     """
     Verifica si el token puede LEER una cuenta publicitaria.
     Devuelve (True, nombre) si sí; (False, motivo) si no.
     """
     try:
-        with httpx.Client(timeout=TIMEOUT) as client:
-            data = _get(client, ad_account_id, token, {"fields": "name,account_status"})
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            sem = asyncio.Semaphore(_MAX_CONCURRENCY)
+            data = await _get(client, sem, ad_account_id, token, {"fields": "name,account_status"})
         return True, data.get("name", ad_account_id)
     except MetaApiError as e:
         return False, str(e)
-    except httpx.HTTPError as e:
-        return False, f"Error de red: {e}"
     except httpx.InvalidURL:
         return False, "ID de cuenta inválido (revisa que no tenga espacios ni caracteres extra)"
+    except httpx.HTTPError as e:
+        return False, f"Error de red: {e}"
 
 
-def get_campaigns(client: httpx.Client, token: str, ad_account_id: str) -> list[dict]:
+async def get_campaigns(client: httpx.AsyncClient, sem: asyncio.Semaphore,
+                        token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
-    data = _get(client, f"{ad_account_id}/campaigns", token, {
+    data = await _get(client, sem, f"{ad_account_id}/campaigns", token, {
         "fields": "id,name,objective,status,daily_budget,lifetime_budget",
         "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
                                   "value": ["ACTIVE", "PAUSED"]}]),
@@ -82,10 +93,11 @@ def get_campaigns(client: httpx.Client, token: str, ad_account_id: str) -> list[
     return data.get("data", [])
 
 
-def get_campaign_insights(client: httpx.Client, token: str, campaign_id: str,
-                          objective: str, date_from: str, date_to: str) -> dict | None:
+async def get_campaign_insights(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+                                campaign_id: str, objective: str,
+                                date_from: str, date_to: str) -> dict | None:
     """Números de rendimiento de UNA campaña en el rango de fechas."""
-    data = _get(client, f"{campaign_id}/insights", token, {
+    data = await _get(client, sem, f"{campaign_id}/insights", token, {
         "fields": ",".join(_metrics_for(objective)),
         "time_range": json.dumps({"since": date_from, "until": date_to}),
         "level": "campaign",
@@ -94,37 +106,47 @@ def get_campaign_insights(client: httpx.Client, token: str, campaign_id: str,
     return rows[0] if rows else None
 
 
-def get_campaign_ads(client: httpx.Client, token: str, campaign_id: str,
-                     objective: str, date_from: str, date_to: str) -> list[dict]:
+async def get_campaign_ads(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+                           campaign_id: str, objective: str,
+                           date_from: str, date_to: str) -> list[dict]:
     """Anuncios de una campaña con su rendimiento e imagen, ordenados por desempeño."""
     metrics = _metrics_for(objective)
 
-    adsets = _get(client, f"{campaign_id}/adsets", token,
-                  {"fields": "id,name", "limit": 20}).get("data", [])
+    adsets = (await _get(client, sem, f"{campaign_id}/adsets", token,
+                         {"fields": "id,name", "limit": 20})).get("data", [])
 
-    all_ads: list[dict] = []
-    for adset in adsets:
-        ads = _get(client, f"{adset['id']}/ads", token, {
+    async def _ads_for_adset(adset: dict) -> list[dict]:
+        ads = (await _get(client, sem, f"{adset['id']}/ads", token, {
             "fields": "id,name,creative{thumbnail_url,image_url,object_story_spec}",
             "limit": 20,
-        }).get("data", [])
+        })).get("data", [])
 
-        for ad in ads:
-            insights_rows = _get(client, f"{ad['id']}/insights", token, {
+        async def _with_insights(ad: dict) -> dict:
+            insights_rows = (await _get(client, sem, f"{ad['id']}/insights", token, {
                 "fields": ",".join(metrics),
                 "time_range": json.dumps({"since": date_from, "until": date_to}),
-            }).get("data", [])
+            })).get("data", [])
             insights = insights_rows[0] if insights_rows else {}
 
             creative = ad.get("creative") or {}
             image_url = creative.get("thumbnail_url") or creative.get("image_url")
 
-            all_ads.append({
+            return {
                 "id": ad["id"],
                 "name": ad.get("name"),
                 "image_url": image_url,
                 "insights": insights,
-            })
+            }
+
+        if not ads:
+            return []
+        return list(await asyncio.gather(*(_with_insights(ad) for ad in ads)))
+
+    if not adsets:
+        all_ads: list[dict] = []
+    else:
+        groups = await asyncio.gather(*(_ads_for_adset(adset) for adset in adsets))
+        all_ads = [ad for group in groups for ad in group]
 
     def _rank(ad: dict) -> float:
         i = ad["insights"]
@@ -140,26 +162,24 @@ def get_campaign_ads(client: httpx.Client, token: str, campaign_id: str,
     return all_ads
 
 
-def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str) -> dict:
+async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str) -> dict:
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
+    Todas las campañas (y, dentro de cada una, insights + anuncios) se piden en paralelo.
     """
-    with httpx.Client(timeout=TIMEOUT) as client:
-        campaigns = get_campaigns(client, token, ad_account_id)
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
+        campaigns = await get_campaigns(client, sem, token, ad_account_id)
 
-        campaign_data = []
-        total_spend = 0.0
-
-        for campaign in campaigns:
+        async def _for_campaign(campaign: dict) -> dict:
             objective = campaign.get("objective", "DEFAULT")
-            insights = get_campaign_insights(client, token, campaign["id"], objective, date_from, date_to)
-            ads = get_campaign_ads(client, token, campaign["id"], objective, date_from, date_to)
-
+            insights, ads = await asyncio.gather(
+                get_campaign_insights(client, sem, token, campaign["id"], objective, date_from, date_to),
+                get_campaign_ads(client, sem, token, campaign["id"], objective, date_from, date_to),
+            )
             spend = float((insights or {}).get("spend", 0) or 0)
-            total_spend += spend
-
-            campaign_data.append({
+            return {
                 "id": campaign["id"],
                 "name": campaign.get("name"),
                 "objective": objective,
@@ -167,17 +187,20 @@ def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: st
                 "insights": insights or {},
                 "ads": ads,
                 "spend": spend,
-            })
+            }
 
+        campaign_data = list(await asyncio.gather(*(_for_campaign(c) for c in campaigns))) if campaigns else []
+
+    total_spend = sum(c["spend"] for c in campaign_data)
     return {"campaigns": campaign_data, "total_spend": total_spend}
 
 
 # ── Listado de cuentas (acceso directo + portafolios comerciales) ──────────
-def _collect(client: httpx.Client, token: str, path: str, source: str,
-             out: dict, warnings: list) -> None:
+async def _collect(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+                   path: str, source: str, out: dict, warnings: list) -> None:
     """Pide una lista de cuentas y las acumula en `out` (dedup por id)."""
     try:
-        data = _get(client, path, token, {
+        data = await _get(client, sem, path, token, {
             "fields": "account_id,name,account_status",
             "limit": 250,
         })
@@ -203,7 +226,7 @@ def _collect(client: httpx.Client, token: str, path: str, source: str,
         }
 
 
-def list_ad_accounts(token: str) -> dict:
+async def list_ad_accounts(token: str) -> dict:
     """
     Lista TODAS las cuentas publicitarias que un token puede ver, juntando:
       1. /me/adaccounts                      → acceso directo (rol propio)
@@ -222,24 +245,34 @@ def list_ad_accounts(token: str) -> dict:
     warnings: list = []
     businesses: list = []
 
-    with httpx.Client(timeout=TIMEOUT) as client:
-        # 1. Acceso directo
-        _collect(client, token, "me/adaccounts", "Acceso directo", out, warnings)
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
 
-        # 2 y 3. A través de los portafolios comerciales
-        try:
-            biz = _get(client, "me/businesses", token, {"fields": "id,name", "limit": 100})
-            businesses = [{"id": b.get("id"), "name": b.get("name")} for b in biz.get("data", [])]
-        except MetaApiError as e:
-            warnings.append(f"Portafolios: {e}")
-            businesses = []
+        # 1. Acceso directo (en paralelo con traer los portafolios)
+        async def _load_businesses() -> list[dict]:
+            try:
+                biz = await _get(client, sem, "me/businesses", token, {"fields": "id,name", "limit": 100})
+                return [{"id": b.get("id"), "name": b.get("name")} for b in biz.get("data", [])]
+            except MetaApiError as e:
+                warnings.append(f"Portafolios: {e}")
+                return []
 
-        for b in businesses:
-            bname = b.get("name") or b.get("id")
-            _collect(client, token, f"{b['id']}/owned_ad_accounts",
-                     f"Portafolio: {bname}", out, warnings)
-            _collect(client, token, f"{b['id']}/client_ad_accounts",
-                     f"Compartida con: {bname}", out, warnings)
+        _, businesses = await asyncio.gather(
+            _collect(client, sem, token, "me/adaccounts", "Acceso directo", out, warnings),
+            _load_businesses(),
+        )
+
+        # 2 y 3. A través de los portafolios comerciales, todos en paralelo
+        if businesses:
+            await asyncio.gather(*(
+                _collect(client, sem, token, f"{b['id']}/owned_ad_accounts",
+                        f"Portafolio: {b.get('name') or b['id']}", out, warnings)
+                for b in businesses
+            ), *(
+                _collect(client, sem, token, f"{b['id']}/client_ad_accounts",
+                        f"Compartida con: {b.get('name') or b['id']}", out, warnings)
+                for b in businesses
+            ))
 
     accounts = sorted(out.values(), key=lambda a: (a.get("name") or "").lower())
     return {"accounts": accounts, "businesses": businesses, "warnings": warnings}

@@ -47,6 +47,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Sin esto, el navegador no deja leer Content-Disposition en cross-origin
+    # (frontend en Vercel, backend en Railway) y el nombre del PDF se pierde.
+    expose_headers=["Content-Disposition"],
 )
 
 # Rutas de la API

@@ -175,7 +175,7 @@ def facebook_status(current: User = Depends(get_current_user), db: Session = Dep
 
 
 @router.get("/adaccounts")
-def facebook_adaccounts(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def facebook_adaccounts(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Lista las cuentas publicitarias que la sesión de Facebook del usuario puede ver."""
     conn = db.scalar(select(FacebookConnection).where(FacebookConnection.user_id == current.id))
     if not conn:
@@ -184,7 +184,7 @@ def facebook_adaccounts(current: User = Depends(get_current_user), db: Session =
     if not token:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "El token guardado no se pudo leer; reconecta.")
     try:
-        return meta_api.list_ad_accounts(token)
+        return await meta_api.list_ad_accounts(token)
     except meta_api.MetaApiError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 

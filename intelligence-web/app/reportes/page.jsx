@@ -16,6 +16,7 @@ export default function ReportesPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [budget, setBudget] = useState("");
+  const [currency, setCurrency] = useState("USD");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -55,6 +56,7 @@ export default function ReportesPage() {
         date_from: dateFrom,
         date_to: dateTo,
         budget: budget ? Number(budget) : null,
+        currency,
       });
       setInfo(`Reporte descargado: ${filename}`);
     } catch (e) {
@@ -66,6 +68,11 @@ export default function ReportesPage() {
     ["quincenal", "Quincenal"],
     ["mensual", "Mensual"],
     ["personalizado", "Personalizado"],
+  ];
+
+  const MONEDAS = [
+    ["USD", "$ Dólares"],
+    ["GTQ", "Q Quetzales"],
   ];
 
   return (
@@ -140,6 +147,32 @@ export default function ReportesPage() {
               to={dateTo}
               onChange={(f, t) => { setDateFrom(f); setDateTo(t); setReportType("personalizado"); }}
             />
+          </div>
+
+          <div className="field">
+            <label>Moneda</label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+              {MONEDAS.map(([val, label]) => {
+                const activo = currency === val;
+                return (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setCurrency(val)}
+                    style={{
+                      padding: "9px 0", borderRadius: "var(--radius-sm)", cursor: "pointer",
+                      fontFamily: "inherit", fontSize: 11.5, fontWeight: activo ? 500 : 400,
+                      background: activo ? "var(--surface2)" : "transparent",
+                      border: `1px solid ${activo ? "var(--orange)" : "var(--border2)"}`,
+                      color: activo ? "var(--orange)" : "var(--muted)",
+                      transition: "all .15s",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="field">

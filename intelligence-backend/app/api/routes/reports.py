@@ -85,7 +85,7 @@ def report_status(
 
 
 @router.post("/generate")
-def generate_report(
+async def generate_report(
     data: ReportRequest,
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -119,8 +119,8 @@ def generate_report(
         )
 
     try:
-        pdf_bytes, filename = report_builder.build_pdf(
-            client, token, data.date_from, data.date_to, data.budget
+        pdf_bytes, filename = await report_builder.build_pdf(
+            client, token, data.date_from, data.date_to, data.budget, data.currency.value
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -143,7 +143,7 @@ def generate_report(
 
 
 @router.post("/check-access", response_model=CheckAccessResult)
-def check_access(
+async def check_access(
     data: CheckAccessRequest,
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -164,5 +164,5 @@ def check_access(
     if not token:
         return CheckAccessResult(ok=False, detail=error)
 
-    ok, detail = meta_api.check_account_access(token, account.meta_ad_account_id)
+    ok, detail = await meta_api.check_account_access(token, account.meta_ad_account_id)
     return CheckAccessResult(ok=ok, detail=detail)

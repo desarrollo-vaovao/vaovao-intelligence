@@ -74,12 +74,18 @@ class ReportStatus(BaseModel):
     generation_available: bool
 
 
+class ReportCurrency(str, enum.Enum):
+    USD = "USD"
+    GTQ = "GTQ"
+
+
 class ReportRequest(BaseModel):
     client_id: int
     report_type: ReportType = ReportType.quincenal
     date_from: date
     date_to: date
     budget: float | None = None
+    currency: ReportCurrency = ReportCurrency.USD
 
 
 class CheckAccessRequest(BaseModel):
