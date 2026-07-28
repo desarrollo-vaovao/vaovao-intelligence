@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.models import User, Client, AdAccount, UserRole
-from app.schemas import ClientCreate, ClientOut, AdAccountCreate, AdAccountOut
+from app.schemas import ClientCreate, ClientUpdate, ClientOut, AdAccountCreate, AdAccountOut
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -63,6 +63,23 @@ def get_client(
     db: Session = Depends(get_db),
 ):
     return _get_owned_client(client_id, current, db)
+
+
+@router.patch("/{client_id}", response_model=ClientOut)
+def update_client(
+    client_id: int,
+    data: ClientUpdate,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    client = _get_owned_client(client_id, current, db)
+    if data.name is not None:
+        client.name = data.name
+    if data.type is not None:
+        client.type = data.type
+    db.commit()
+    db.refresh(client)
+    return client
 
 
 @router.delete("/{client_id}", status_code=204)

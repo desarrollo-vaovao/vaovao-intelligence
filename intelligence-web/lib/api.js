@@ -38,6 +38,7 @@ export const api = {
 
   listClients: () => request("/clients"),
   createClient: (body) => request("/clients", { method: "POST", body }),
+  updateClient: (clientId, body) => request(`/clients/${clientId}`, { method: "PATCH", body }),
   deleteClient: (clientId) => request(`/clients/${clientId}`, { method: "DELETE" }),
   addAdAccount: (clientId, body) =>
     request(`/clients/${clientId}/ad-accounts`, { method: "POST", body }),

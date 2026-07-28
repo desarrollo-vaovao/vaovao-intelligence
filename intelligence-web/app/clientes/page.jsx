@@ -9,6 +9,7 @@ export default function ClientesPage() {
   const [showClient, setShowClient] = useState(false);
   const [adFor, setAdFor] = useState(null); // cliente al que se le agrega cuenta
   const [deleteTarget, setDeleteTarget] = useState(null); // cliente a eliminar
+  const [editTarget, setEditTarget] = useState(null); // cliente a editar
   const [deleteAccountTarget, setDeleteAccountTarget] = useState(null); // { client, account } a eliminar
   const [access, setAccess] = useState({}); // resultado de "Probar acceso" por cuenta
   const [testing, setTesting] = useState(null); // id de cuenta que se está probando
@@ -59,8 +60,15 @@ export default function ClientesPage() {
                   {c.type === "multi_station" ? "Multi-estación" : "Único"}
                 </span>
                 <div className="spacer" />
-                <button className="btn btn-ghost" onClick={() => setAdFor(c)}>+ Cuenta</button>
-                <button className="btn btn-danger" onClick={() => setDeleteTarget(c)}>Eliminar</button>
+                <button className="icon-btn" title="Agregar cuenta" aria-label="Agregar cuenta" onClick={() => setAdFor(c)}>
+                  <PlusIcon />
+                </button>
+                <button className="icon-btn" title="Editar cliente" aria-label="Editar cliente" onClick={() => setEditTarget(c)}>
+                  <PencilIcon />
+                </button>
+                <button className="icon-btn icon-btn-danger" title="Eliminar cliente" aria-label="Eliminar cliente" onClick={() => setDeleteTarget(c)}>
+                  <TrashIcon />
+                </button>
               </div>
               {c.ad_accounts.length > 0 && (
                 <table className="table">
@@ -122,6 +130,13 @@ export default function ClientesPage() {
 
       {showClient && <ClientModal onClose={() => setShowClient(false)} onDone={() => { setShowClient(false); load(); }} />}
       {adFor && <AdAccountModal client={adFor} onClose={() => setAdFor(null)} onDone={() => { setAdFor(null); load(); }} />}
+      {editTarget && (
+        <EditClientModal
+          client={editTarget}
+          onClose={() => setEditTarget(null)}
+          onDone={() => { setEditTarget(null); load(); }}
+        />
+      )}
       {deleteTarget && (
         <DeleteClientModal
           client={deleteTarget}
@@ -162,6 +177,61 @@ function DeleteClientModal({ client, onClose, onDone }) {
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="btn btn-danger" onClick={confirmDelete} disabled={busy}>
             {busy ? "Eliminando…" : "Eliminar cliente"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+      <path d="M15 5l4 4" />
+    </svg>
+  );
+}
+
+function EditClientModal({ client, onClose, onDone }) {
+  const [name, setName] = useState(client.name);
+  const [type, setType] = useState(client.type);
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  async function save() {
+    setErr(""); setBusy(true);
+    try { await api.updateClient(client.id, { name, type }); onDone(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Editar cliente</h2>
+        {err && <div className="err">{err}</div>}
+        <div className="field">
+          <label>Nombre</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Rent a Car GT" />
+        </div>
+        <div className="field">
+          <label>Tipo</label>
+          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="single">Único (una cuenta)</option>
+            <option value="multi_station">Multi-estación (varias cuentas/países)</option>
+          </select>
+        </div>
+        <div className="row" style={{ marginTop: 18 }}>
+          <div className="spacer" />
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy || !name.trim()}>
+            {busy ? "Guardando…" : "Guardar cambios"}
           </button>
         </div>
       </div>

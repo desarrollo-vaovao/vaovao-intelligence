@@ -125,6 +125,12 @@ class ClientCreate(BaseModel):
     type: ClientType = ClientType.single
 
 
+class ClientUpdate(BaseModel):
+    """Actualización parcial de un cliente."""
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    type: ClientType | None = None
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
