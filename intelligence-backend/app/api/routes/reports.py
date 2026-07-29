@@ -40,28 +40,36 @@ def _meta_connected(org: Organization) -> bool:
     return bool(org and org.meta_token_encrypted)
 
 
-def _resolve_token(current: User, db: Session) -> tuple[str | None, str | None]:
+def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
     """
-    Elige qué token usar para hablar con Meta, en este orden:
+    Junta TODOS los tokens disponibles para hablar con Meta, en orden de preferencia:
       1) El Facebook conectado del usuario actual (por usuario, recomendado).
-      2) El token central de la organización (alternativa).
-    Devuelve (token, motivo_de_error). Si hay token, motivo es None.
+      2) El token central de la organización (respaldo).
+    Se devuelven ambos (si existen) para que el llamador pueda reintentar con el
+    siguiente cuando el primero no tenga acceso a una cuenta puntual — así, una
+    vez que el token central tiene permiso sobre una cuenta, cualquier persona
+    del equipo puede usarla sin pedir su propio permiso individual en Meta.
+    Devuelve (tokens, motivo_de_error). Si hay al menos un token, motivo es None.
     """
+    tokens: list[str] = []
+
     fb_conn = db.scalar(
         select(FacebookConnection).where(FacebookConnection.user_id == current.id)
     )
     if fb_conn:
         token = crypto.decrypt(fb_conn.token_encrypted)
         if token:
-            return token, None
+            tokens.append(token)
 
     org = db.get(Organization, current.org_id)
     if org and org.meta_token_encrypted:
         token = crypto.decrypt(org.meta_token_encrypted)
         if token:
-            return token, None
+            tokens.append(token)
 
-    return None, "No has conectado tu Facebook y no hay token central (Conexión Meta)."
+    if not tokens:
+        return [], "No has conectado tu Facebook y no hay token central (Conexión Meta)."
+    return tokens, None
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -108,8 +116,8 @@ async def generate_report(
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
 
-    token, error = _resolve_token(current, db)
-    if not token:
+    tokens, error = _resolve_tokens(current, db)
+    if not tokens:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
     if not GENERATION_AVAILABLE:
@@ -120,7 +128,7 @@ async def generate_report(
 
     try:
         pdf_bytes, filename = await report_builder.build_pdf(
-            client, token, data.date_from, data.date_to, data.budget, data.currency.value
+            client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -160,9 +168,9 @@ async def check_access(
     if not account:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Cuenta no encontrada")
 
-    token, error = _resolve_token(current, db)
-    if not token:
+    tokens, error = _resolve_tokens(current, db)
+    if not tokens:
         return CheckAccessResult(ok=False, detail=error)
 
-    ok, detail = await meta_api.check_account_access(token, account.meta_ad_account_id)
+    ok, detail = await meta_api.check_account_access_with_fallback(tokens, account.meta_ad_account_id)
     return CheckAccessResult(ok=ok, detail=detail)

@@ -81,6 +81,20 @@ async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, st
         return False, f"Error de red: {e}"
 
 
+async def check_account_access_with_fallback(tokens: list[str], ad_account_id: str) -> tuple[bool, str]:
+    """
+    Igual que check_account_access, pero prueba varios tokens en orden y
+    devuelve el primer resultado exitoso (o el último motivo de falla si
+    ninguno funcionó).
+    """
+    result = (False, "Sin tokens disponibles.")
+    for token in tokens:
+        result = await check_account_access(token, ad_account_id)
+        if result[0]:
+            return result
+    return result
+
+
 async def get_campaigns(client: httpx.AsyncClient, sem: asyncio.Semaphore,
                         token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
@@ -160,6 +174,25 @@ async def get_campaign_ads(client: httpx.AsyncClient, sem: asyncio.Semaphore, to
 
     all_ads.sort(key=_rank, reverse=True)
     return all_ads
+
+
+async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
+                                         date_from: str, date_to: str) -> dict:
+    """
+    Igual que get_account_data, pero prueba varios tokens en orden (p. ej. el
+    Facebook personal del usuario y, si a ESA cuenta le falta acceso, el token
+    central de la organización) hasta que uno funcione. Así, una vez que el
+    token central tiene permiso sobre una cuenta, cualquier persona del equipo
+    puede generar su reporte aunque su Facebook personal no tenga acceso.
+    """
+    last_error: MetaApiError | None = None
+    for token in tokens:
+        try:
+            return await get_account_data(token, ad_account_id, date_from, date_to)
+        except MetaApiError as e:
+            last_error = e
+    assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
+    raise last_error
 
 
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str) -> dict:

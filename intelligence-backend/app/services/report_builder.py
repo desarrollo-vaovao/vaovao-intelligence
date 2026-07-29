@@ -29,11 +29,15 @@ def format_period(date_from: date, date_to: date) -> str:
             f"{date_to.day} {_MESES[date_to.month - 1]} {date_to.year}")
 
 
-async def build_report_data(client: Client, token: str, date_from: date, date_to: date,
+async def build_report_data(client: Client, tokens: list[str], date_from: date, date_to: date,
                             budget: float | None = None, currency: str = "USD") -> dict:
     """
     Construye el diccionario que pdf_generator sabe dibujar.
-    Lanza meta_api.MetaApiError si Meta rechaza alguna llamada.
+    `tokens` es una lista de candidatos en orden de preferencia (p. ej. el
+    Facebook personal del usuario y, de respaldo, el token central de la
+    organización): si el primero no tiene acceso a una cuenta puntual, se
+    reintenta con el siguiente antes de fallar.
+    Lanza meta_api.MetaApiError si ningún token puede leer alguna cuenta.
     """
     accounts = list(client.ad_accounts)
     if not accounts:
@@ -48,7 +52,7 @@ async def build_report_data(client: Client, token: str, date_from: date, date_to
     if len(accounts) > 1:
         # Todas las cuentas se piden en paralelo, no una por una.
         results = await asyncio.gather(*(
-            meta_api.get_account_data(token, acc.meta_ad_account_id, d_from, d_to)
+            meta_api.get_account_data_with_fallback(tokens, acc.meta_ad_account_id, d_from, d_to)
             for acc in accounts
         ))
         # El presupuesto se reparte en partes iguales si viene uno global
@@ -73,7 +77,7 @@ async def build_report_data(client: Client, token: str, date_from: date, date_to
 
     # ── Cuenta única ──
     acc = accounts[0]
-    data = await meta_api.get_account_data(token, acc.meta_ad_account_id, d_from, d_to)
+    data = await meta_api.get_account_data_with_fallback(tokens, acc.meta_ad_account_id, d_from, d_to)
     return {
         "client_name": client.name,
         "period": period,
@@ -85,12 +89,12 @@ async def build_report_data(client: Client, token: str, date_from: date, date_to
     }
 
 
-async def build_pdf(client: Client, token: str, date_from: date, date_to: date,
+async def build_pdf(client: Client, tokens: list[str], date_from: date, date_to: date,
                     budget: float | None = None, currency: str = "USD") -> tuple[bytes, str]:
     """
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
     """
-    report_data = await build_report_data(client, token, date_from, date_to, budget, currency)
+    report_data = await build_report_data(client, tokens, date_from, date_to, budget, currency)
     # Playwright (sync) bloquearía el loop async si se llama directo; lo mandamos a un hilo.
     pdf_bytes = await asyncio.to_thread(pdf_generator.generate_pdf, report_data)
 
