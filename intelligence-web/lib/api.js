@@ -55,6 +55,7 @@ export const api = {
   setMetaAppId: (body) => request("/organization/meta-app-id", { method: "PUT", body }),
   addMetaToken: (body) => request("/organization/meta-credentials", { method: "POST", body }),
   deleteMetaToken: (id) => request(`/organization/meta-credentials/${id}`, { method: "DELETE" }),
+  getMetaTokenAdAccounts: (id) => request(`/organization/meta-credentials/${id}/adaccounts`),
 
   reportStatus: () => request("/reports/status"),
   generateReport: async (body) => {

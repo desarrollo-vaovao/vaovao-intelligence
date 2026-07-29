@@ -27,6 +27,7 @@ from app.schemas import (
     MetaCentralTokenOut,
     MetaCredentialsStatus,
 )
+from app.services import meta_api
 
 router = APIRouter(prefix="/organization", tags=["organization"])
 
@@ -103,6 +104,30 @@ def add_meta_central_token(
 
     db.commit()
     return _status(org, db)
+
+
+@router.get("/meta-credentials/{token_id}/adaccounts")
+async def get_meta_central_token_adaccounts(
+    token_id: int,
+    current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
+    db: Session = Depends(get_db),
+):
+    """Cuentas publicitarias visibles para el System User de este portafolio."""
+    org = db.get(Organization, current.org_id)
+    token_row = db.scalar(
+        select(MetaCentralToken).where(
+            MetaCentralToken.id == token_id, MetaCentralToken.org_id == org.id
+        )
+    )
+    if not token_row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Token no encontrado")
+    token = crypto.decrypt(token_row.token_encrypted)
+    if not token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El token guardado no se pudo leer")
+    try:
+        return await meta_api.list_ad_accounts(token)
+    except meta_api.MetaApiError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
 @router.delete("/meta-credentials/{token_id}", response_model=MetaCredentialsStatus)
