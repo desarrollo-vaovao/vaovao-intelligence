@@ -52,8 +52,9 @@ export const api = {
   updateUser: (id, body) => request(`/users/${id}`, { method: "PATCH", body }),
 
   getMeta: () => request("/organization/meta-credentials"),
-  setMeta: (body) => request("/organization/meta-credentials", { method: "PUT", body }),
-  clearMeta: () => request("/organization/meta-credentials", { method: "DELETE" }),
+  setMetaAppId: (body) => request("/organization/meta-app-id", { method: "PUT", body }),
+  addMetaToken: (body) => request("/organization/meta-credentials", { method: "POST", body }),
+  deleteMetaToken: (id) => request(`/organization/meta-credentials/${id}`, { method: "DELETE" }),
 
   reportStatus: () => request("/reports/status"),
   generateReport: async (body) => {

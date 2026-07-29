@@ -50,16 +50,31 @@ class UserUpdate(BaseModel):
 
 
 # ── Credenciales de Meta ──────────────────────────────────────
-class MetaCredentialsIn(BaseModel):
+# Puede haber varios tokens centrales (uno por portafolio comercial
+# independiente, ej. "Vao Vao", "Menos Pausa") — un solo System User no puede
+# cruzar de un portafolio a otro en Meta.
+class MetaAppIdIn(BaseModel):
     meta_app_id: str = Field(min_length=3, max_length=40)
+
+
+class MetaCentralTokenIn(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
     system_user_token: str = Field(min_length=10)
 
 
+class MetaCentralTokenOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    label: str
+    token_masked: str
+    created_at: datetime
+
+
 class MetaCredentialsStatus(BaseModel):
-    """Estado de la conexión con Meta — NUNCA expone el token completo."""
+    """Estado de la conexión con Meta — NUNCA expone ningún token completo."""
     configured: bool
     meta_app_id: str | None = None
-    token_masked: str | None = None
+    tokens: list[MetaCentralTokenOut] = Field(default_factory=list)
 
 
 # ── Reportes (módulo preparado, se activa al conectar Meta) ────

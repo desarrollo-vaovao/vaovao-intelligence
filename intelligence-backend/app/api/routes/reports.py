@@ -4,7 +4,7 @@ Módulo de Reportes — MOTOR ACTIVO.
 Genera el reporte de campañas de Meta en PDF y lo devuelve para descargar.
 Usa, en orden de preferencia:
   1. El Facebook conectado del usuario ("por usuario", recomendado)
-  2. El token central de la organización (alternativa)
+  2. Los tokens centrales de la organización (uno por portafolio comercial)
 
 Endpoints:
 - GET  /reports/status        → si hay conexión con Meta y si la generación está lista
@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core import crypto
-from app.models import User, Organization, Client, AdAccount, FacebookConnection
+from app.models import User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken
 from app.schemas import (
     ReportStatus,
     ReportRequest,
@@ -35,20 +35,26 @@ GENERATION_AVAILABLE = True
 
 
 # ── Helpers ──────────────────────────────────────────────────
-def _meta_connected(org: Organization) -> bool:
-    """Hay token central de la organización guardado."""
-    return bool(org and org.meta_token_encrypted)
+def _meta_connected(org: Organization, db: Session) -> bool:
+    """Hay al menos un token central de la organización guardado."""
+    if not org:
+        return False
+    return db.scalar(
+        select(MetaCentralToken.id).where(MetaCentralToken.org_id == org.id)
+    ) is not None
 
 
 def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
     """
     Junta TODOS los tokens disponibles para hablar con Meta, en orden de preferencia:
       1) El Facebook conectado del usuario actual (por usuario, recomendado).
-      2) El token central de la organización (respaldo).
-    Se devuelven ambos (si existen) para que el llamador pueda reintentar con el
+      2) Los tokens centrales de la organización (uno por portafolio comercial
+         independiente — ej. "Vao Vao", "Menos Pausa" — un solo System User no
+         puede cruzar de un portafolio a otro).
+    Se devuelven todos (si existen) para que el llamador pueda reintentar con el
     siguiente cuando el primero no tenga acceso a una cuenta puntual — así, una
-    vez que el token central tiene permiso sobre una cuenta, cualquier persona
-    del equipo puede usarla sin pedir su propio permiso individual en Meta.
+    vez que algún token central tiene permiso sobre una cuenta, cualquier
+    persona del equipo puede usarla sin pedir su propio permiso individual en Meta.
     Devuelve (tokens, motivo_de_error). Si hay al menos un token, motivo es None.
     """
     tokens: list[str] = []
@@ -61,14 +67,16 @@ def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
         if token:
             tokens.append(token)
 
-    org = db.get(Organization, current.org_id)
-    if org and org.meta_token_encrypted:
-        token = crypto.decrypt(org.meta_token_encrypted)
+    central_rows = db.scalars(
+        select(MetaCentralToken).where(MetaCentralToken.org_id == current.org_id)
+    ).all()
+    for row in central_rows:
+        token = crypto.decrypt(row.token_encrypted)
         if token:
             tokens.append(token)
 
     if not tokens:
-        return [], "No has conectado tu Facebook y no hay token central (Conexión Meta)."
+        return [], "No has conectado tu Facebook y no hay tokens centrales (Conexión Meta)."
     return tokens, None
 
 
@@ -84,7 +92,7 @@ def report_status(
     has_fb = db.scalar(
         select(FacebookConnection.id).where(FacebookConnection.user_id == current.id)
     ) is not None
-    connected = _meta_connected(org) or has_fb
+    connected = _meta_connected(org, db) or has_fb
 
     return ReportStatus(
         meta_connected=connected,

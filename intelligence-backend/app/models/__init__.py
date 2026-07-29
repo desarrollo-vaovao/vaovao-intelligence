@@ -42,13 +42,15 @@ class Organization(Base):
     slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    # ── Credenciales de Meta (el "espacio" preparado para conectar luego) ──
-    # El token se guarda CIFRADO (ver core/crypto.py). Nunca en texto plano.
+    # ── Credenciales de Meta ──
+    # La app de Meta es una sola para toda la organización.
     meta_app_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    meta_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    meta_central_tokens: Mapped[list["MetaCentralToken"]] = relationship(
+        back_populates="organization", cascade="all, delete-orphan"
+    )
 
 
 class User(Base):
@@ -107,3 +109,22 @@ class FacebookConnection(Base):
     token_encrypted: Mapped[str] = mapped_column(String(700))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class MetaCentralToken(Base):
+    """
+    Token de System User de Meta, uno por cada portafolio comercial independiente
+    (ej. "Vao Vao", "Menos Pausa", "Cementerios"). Un solo System User no puede
+    cruzar de un portafolio a otro, así que cada portafolio necesita el suyo.
+    Se usan como respaldo cuando el Facebook personal del usuario no tiene
+    acceso a una cuenta puntual (ver reports.py _resolve_tokens).
+    """
+    __tablename__ = "meta_central_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str] = mapped_column(String(120))  # ej. "Vao Vao", "Menos Pausa"
+    token_encrypted: Mapped[str] = mapped_column(String(700))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="meta_central_tokens")
