@@ -54,7 +54,14 @@ def create_client(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    client = Client(org_id=current.org_id, name=data.name, type=data.type)
+    name = data.name.strip()
+    existing = db.scalars(
+        select(Client).where(Client.org_id == current.org_id)
+    ).all()
+    if any(c.name.strip().lower() == name.lower() for c in existing):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Ya existe un cliente con ese nombre")
+
+    client = Client(org_id=current.org_id, name=name, type=data.type)
     db.add(client)
     db.commit()
     db.refresh(client)
@@ -81,7 +88,13 @@ def update_client(
 ):
     client = _get_owned_client(client_id, current, db)
     if data.name is not None:
-        client.name = data.name
+        name = data.name.strip()
+        others = db.scalars(
+            select(Client).where(Client.org_id == current.org_id, Client.id != client.id)
+        ).all()
+        if any(c.name.strip().lower() == name.lower() for c in others):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Ya existe un cliente con ese nombre")
+        client.name = name
     if data.type is not None:
         client.type = data.type
     db.commit()

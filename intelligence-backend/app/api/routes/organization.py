@@ -17,8 +17,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
-
 from app.api.deps import require_roles
 from app.core.database import get_db
 from app.core import crypto
@@ -95,14 +93,13 @@ def add_meta_central_token(
     # El portafolio suele ser 1:1 con un cliente (ver conversación del setup) —
     # si no existe ya un cliente con ese nombre, lo creamos para no tener que
     # darlo de alta a mano en dos lugares distintos.
-    existing = db.scalar(
-        select(Client).where(
-            Client.org_id == org.id,
-            func.lower(Client.name) == data.label.strip().lower(),
-        )
-    )
-    if not existing:
-        db.add(Client(org_id=org.id, name=data.label.strip()))
+    # Comparación en Python (no SQL) para no depender de TRIM de la base:
+    # copiar/pegar nombres desde otros lados a veces mete tabs/espacios que
+    # TRIM de SQL no siempre limpia (ya nos pasó con un ID de cuenta).
+    label = data.label.strip()
+    existing_clients = db.scalars(select(Client).where(Client.org_id == org.id)).all()
+    if not any(c.name.strip().lower() == label.lower() for c in existing_clients):
+        db.add(Client(org_id=org.id, name=label))
 
     db.commit()
     return _status(org, db)
