@@ -17,10 +17,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from app.api.deps import require_roles
 from app.core.database import get_db
 from app.core import crypto
-from app.models import User, Organization, MetaCentralToken, UserRole
+from app.models import User, Organization, MetaCentralToken, Client, UserRole
 from app.schemas import (
     MetaAppIdIn,
     MetaCentralTokenIn,
@@ -89,6 +91,19 @@ def add_meta_central_token(
 
     token_row = MetaCentralToken(org_id=org.id, label=data.label, token_encrypted=encrypted)
     db.add(token_row)
+
+    # El portafolio suele ser 1:1 con un cliente (ver conversación del setup) —
+    # si no existe ya un cliente con ese nombre, lo creamos para no tener que
+    # darlo de alta a mano en dos lugares distintos.
+    existing = db.scalar(
+        select(Client).where(
+            Client.org_id == org.id,
+            func.lower(Client.name) == data.label.strip().lower(),
+        )
+    )
+    if not existing:
+        db.add(Client(org_id=org.id, name=data.label.strip()))
+
     db.commit()
     return _status(org, db)
 

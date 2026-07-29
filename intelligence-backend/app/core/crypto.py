@@ -33,10 +33,14 @@ def decrypt(ciphertext: str) -> str | None:
         return None
 
 
-def mask(secret: str, visible: int = 4) -> str:
-    """Devuelve una versión enmascarada para mostrar en UI sin exponer el secreto."""
+def mask(secret: str, visible: int = 4, dots: int = 8) -> str:
+    """
+    Devuelve una versión enmascarada para mostrar en UI sin exponer el secreto.
+    Los tokens de Meta son larguísimos (100+ caracteres); `dots` limita cuántos
+    puntos se muestran para que no se vea una fila interminable en la UI.
+    """
     if not secret:
         return ""
     if len(secret) <= visible:
         return "•" * len(secret)
-    return "•" * (len(secret) - visible) + secret[-visible:]
+    return "•" * dots + secret[-visible:]

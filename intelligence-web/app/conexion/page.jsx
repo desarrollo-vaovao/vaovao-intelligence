@@ -19,6 +19,7 @@ function TrashIcon() {
 export default function ConexionPage() {
   const [status, setStatus] = useState(null);
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
 
   const [appId, setAppId] = useState("");
   const [savingAppId, setSavingAppId] = useState(false);
@@ -42,10 +43,13 @@ export default function ConexionPage() {
   }
 
   async function addToken() {
-    setErr(""); setAddingToken(true);
+    setErr(""); setNote(""); setAddingToken(true);
     try {
-      await api.addMetaToken({ label, system_user_token: token });
-      setLabel(""); setToken(""); await load();
+      const savedLabel = label.trim();
+      await api.addMetaToken({ label: savedLabel, system_user_token: token });
+      setLabel(""); setToken("");
+      setNote(`Token agregado. Revisa Clientes: "${savedLabel}" ya debería aparecer ahí.`);
+      await load();
     } catch (e) { setErr(e.message); }
     finally { setAddingToken(false); }
   }
@@ -76,6 +80,7 @@ export default function ConexionPage() {
       </div>
 
       {err && <div className="err" style={{ maxWidth: 620, margin: "0 auto 14px" }}>{err}</div>}
+      {note && <div className="notice" style={{ maxWidth: 620, margin: "0 auto 14px" }}><div>{note}</div></div>}
 
       <div className="card" style={{ padding: 22, maxWidth: 620, margin: "0 auto" }}>
         <div className="row" style={{ marginBottom: 18 }}>
@@ -91,6 +96,8 @@ export default function ConexionPage() {
           Cada portafolio comercial independiente de Meta (ej. "Vao Vao", "Menos Pausa")
           necesita su propio System User Token — un solo System User no puede ver activos
           de un portafolio que no es el suyo. Se guardan cifrados y nunca se muestran completos.
+          Al agregar uno, si no existe ya un cliente con ese mismo nombre, se crea automáticamente
+          en <b>Clientes</b> (sin duplicar si ya existía).
         </p>
 
         <div className="field">
@@ -108,30 +115,30 @@ export default function ConexionPage() {
         </div>
 
         {tokens.length > 0 && (
-          <table className="table" style={{ marginBottom: 14 }}>
-            <thead>
-              <tr><th>Portafolio</th><th>Token</th><th></th></tr>
-            </thead>
-            <tbody>
-              {tokens.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.label}</td>
-                  <td className="mono" style={{ fontSize: 13, color: "var(--muted)" }}>{t.token_masked}</td>
-                  <td>
-                    <button
-                      className="icon-btn icon-btn-danger"
-                      title="Eliminar token"
-                      aria-label="Eliminar token"
-                      onClick={() => removeToken(t.id)}
-                      disabled={deletingId === t.id}
-                    >
-                      <TrashIcon />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+            gap: 10, marginBottom: 14,
+          }}>
+            {tokens.map((t) => (
+              <div key={t.id} className="card" style={{ padding: 14, background: "var(--surface2)" }}>
+                <div className="row" style={{ marginBottom: 8 }}>
+                  <span className="pulse on" />
+                  <strong style={{ fontSize: 14 }}>{t.label}</strong>
+                  <div className="spacer" />
+                  <button
+                    className="icon-btn icon-btn-danger"
+                    title="Eliminar token"
+                    aria-label="Eliminar token"
+                    onClick={() => removeToken(t.id)}
+                    disabled={deletingId === t.id}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+                <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>{t.token_masked}</div>
+              </div>
+            ))}
+          </div>
         )}
 
         <div className="field">
