@@ -48,7 +48,7 @@ export default function FacebookConnect() {
   const connected = status?.connected;
 
   return (
-    <div className="card" style={{ padding: 22, maxWidth: 620, marginBottom: 22, marginLeft: "auto", marginRight: "auto" }}>
+    <div className="card" style={{ padding: 24 }}>
       <div className="row" style={{ marginBottom: 14 }}>
         <span className={`pulse ${connected ? "on" : "off"}`} />
         <h3 style={{ fontSize: 16 }}>
@@ -63,7 +63,7 @@ export default function FacebookConnect() {
 
       {!connected ? (
         <>
-          <p style={{ color: "var(--muted)", fontSize: 14, marginTop: 0 }}>
+          <p style={{ color: "var(--muted)", fontSize: 14, marginTop: 0, maxWidth: 520 }}>
             Conecta tu cuenta de Facebook para usar <b>tu propio acceso</b> a las cuentas
             publicitarias que ya administras. Así no se depende de una sola cuenta central.
           </p>

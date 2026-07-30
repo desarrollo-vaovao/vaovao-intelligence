@@ -207,15 +207,19 @@ export default function ConexionPage() {
 
       <FacebookConnect />
 
-      <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted2)", textTransform: "uppercase", letterSpacing: "1px", margin: "26px auto 12px", maxWidth: 620 }}>
-        Alternativa — tokens centrales (System User)
+      <div className="row" style={{ margin: "28px 0 18px", gap: 14 }}>
+        <div style={{ height: 1, background: "var(--border)", flex: 1 }} />
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--muted2)", textTransform: "uppercase", letterSpacing: "1px", whiteSpace: "nowrap" }}>
+          Alternativa — tokens centrales (System User)
+        </span>
+        <div style={{ height: 1, background: "var(--border)", flex: 1 }} />
       </div>
 
-      {err && <div className="err" style={{ maxWidth: 620, margin: "0 auto 14px" }}>{err}</div>}
-      {note && <div className="notice" style={{ maxWidth: 620, margin: "0 auto 14px" }}><div>{note}</div></div>}
+      {err && <div className="err">{err}</div>}
+      {note && <div className="notice" style={{ marginBottom: 16 }}><div>{note}</div></div>}
 
-      <div className="card" style={{ padding: 22, maxWidth: 620, margin: "0 auto 20px" }}>
-        <div className="row" style={{ marginBottom: 14 }}>
+      <div className="card" style={{ padding: 24, marginBottom: 24 }}>
+        <div className="row" style={{ marginBottom: 18 }}>
           <span className={`pulse ${connected ? "on" : "off"}`} />
           <h3 style={{ fontSize: 16 }}>
             {status === null ? "Comprobando…" : connected ? "Conectado a Meta" : "Sin conectar"}
@@ -224,24 +228,26 @@ export default function ConexionPage() {
           {connected && <span className="badge badge-signal">Listo para reportes</span>}
         </div>
 
-        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 0, marginBottom: 18 }}>
-          Un solo System User no puede ver activos de un portafolio que no es el suyo — por eso
-          puede haber varios tokens, uno por portafolio. Se guardan cifrados y nunca se muestran
-          completos.
-        </p>
+        <div className="row" style={{ gap: 32, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, flex: "1 1 320px", maxWidth: 420 }}>
+            Un solo System User no puede ver activos de un portafolio que no es el suyo — por eso
+            puede haber varios tokens, uno por portafolio. Se guardan cifrados y nunca se muestran
+            completos.
+          </p>
 
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label>App ID (la misma app de Meta para todos los tokens)</label>
-          <div className="row" style={{ gap: 8 }}>
-            <input className="input mono" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="1234567890" />
-            <button className="btn btn-ghost" onClick={saveAppId} disabled={savingAppId || !appId.trim()}>
-              {savingAppId ? "Guardando…" : "Guardar"}
-            </button>
+          <div className="field" style={{ marginBottom: 0, flex: "1 1 320px", maxWidth: 420 }}>
+            <label>App ID (la misma app de Meta para todos los tokens)</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input className="input mono" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="1234567890" />
+              <button className="btn btn-ghost" onClick={saveAppId} disabled={savingAppId || !appId.trim()}>
+                {savingAppId ? "Guardando…" : "Guardar"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      <div style={{ maxWidth: 940, margin: "0 auto" }}>
+      <div>
         <div className="row" style={{ marginBottom: 18, alignItems: "flex-start" }}>
           <div>
             <div className="row" style={{ gap: 8 }}>
