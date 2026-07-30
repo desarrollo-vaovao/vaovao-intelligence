@@ -224,7 +224,7 @@ export default function ConexionPage() {
           {connected && <span className="badge badge-signal">Listo para reportes</span>}
         </div>
 
-        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 0 }}>
+        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 0, marginBottom: 18 }}>
           Un solo System User no puede ver activos de un portafolio que no es el suyo — por eso
           puede haber varios tokens, uno por portafolio. Se guardan cifrados y nunca se muestran
           completos.
@@ -242,42 +242,67 @@ export default function ConexionPage() {
       </div>
 
       <div style={{ maxWidth: 940, margin: "0 auto" }}>
-        <div className="row" style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 11, fontWeight: 500, color: "var(--muted)" }}>
-            Portafolios{tokens.length > 0 ? ` (${tokens.length})` : ""}
-          </label>
+        <div className="row" style={{ marginBottom: 18, alignItems: "flex-start" }}>
+          <div>
+            <div className="row" style={{ gap: 8 }}>
+              <h3 style={{ fontSize: 16 }}>Portafolios</h3>
+              {tokens.length > 0 && <span className="badge badge-neutral">{tokens.length}</span>}
+            </div>
+            <p style={{ color: "var(--muted)", fontSize: 12, margin: "4px 0 0" }}>
+              Un token de System User por cada portafolio comercial de Meta.
+            </p>
+          </div>
           <div className="spacer" />
-          <button className="btn btn-primary" onClick={() => setShowAdd(true)} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <button className="btn btn-primary" onClick={() => setShowAdd(true)} style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
             <PlusIcon /> Agregar portafolio
           </button>
         </div>
 
         {tokens.length === 0 ? (
-          <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
-            Todavía no hay tokens centrales. Cada uno representa un portafolio comercial de Meta.
+          <div className="card empty">
+            <h3>Todavía no hay portafolios</h3>
+            <p>Agrega un token de System User por cada portafolio comercial de Meta que administres.</p>
           </div>
         ) : (
           <div style={{
-            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-            gap: 12,
+            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+            gap: 14,
           }}>
             {tokens.map((t) => (
-              <div key={t.id} className="card" style={{ padding: 16, background: "var(--surface2)" }}>
-                <div className="row" style={{ marginBottom: 8, gap: 8 }}>
-                  <span className="pulse on" />
-                  <strong style={{ fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.label}</strong>
-                  <div className="spacer" />
+              <div key={t.id} className="portfolio-card">
+                <div className="row" style={{ marginBottom: 14, gap: 10, alignItems: "flex-start" }}>
+                  <div style={{
+                    width: 34, height: 34, borderRadius: 9, background: "var(--gradient)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 14, fontWeight: 700, color: "#fff", flexShrink: 0,
+                  }}>
+                    {t.label.trim().charAt(0).toUpperCase() || "?"}
+                  </div>
+                  <div style={{ minWidth: 0, flex: 1, paddingTop: 2 }}>
+                    <strong style={{ fontSize: 14, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.label}>
+                      {t.label}
+                    </strong>
+                    <div className="row" style={{ gap: 5, marginTop: 3 }}>
+                      <span className="pulse on" />
+                      <span style={{ fontSize: 11, color: "var(--success)" }}>Activo</span>
+                    </div>
+                  </div>
                   <button
                     className="icon-btn icon-btn-danger"
                     title="Eliminar token"
                     aria-label="Eliminar token"
                     onClick={() => setDeleteTarget(t)}
+                    style={{ flexShrink: 0 }}
                   >
                     <TrashIcon />
                   </button>
                 </div>
-                <div className="mono" style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>{t.token_masked}</div>
-                <button className="btn btn-ghost" style={{ width: "100%", fontSize: 13 }} onClick={() => setAccountsTarget(t)}>
+
+                <div className="portfolio-token-chip mono" style={{ marginBottom: 14 }}>
+                  <span className="dot" />{t.token_masked}
+                </div>
+
+                <button className="btn btn-ghost" style={{ width: "100%", justifyContent: "center" }} onClick={() => setAccountsTarget(t)}>
                   Ver cuentas
                 </button>
               </div>
