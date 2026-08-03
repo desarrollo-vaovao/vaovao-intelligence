@@ -228,21 +228,13 @@ export default function ConexionPage() {
           {connected && <span className="badge badge-signal">Listo para reportes</span>}
         </div>
 
-        <div className="row" style={{ gap: 32, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, flex: "1 1 320px", maxWidth: 420 }}>
-            Un solo System User no puede ver activos de un portafolio que no es el suyo — por eso
-            puede haber varios tokens, uno por portafolio. Se guardan cifrados y nunca se muestran
-            completos.
-          </p>
-
-          <div className="field" style={{ marginBottom: 0, flex: "1 1 320px", maxWidth: 420 }}>
-            <label>App ID (la misma app de Meta para todos los tokens)</label>
-            <div className="row" style={{ gap: 8 }}>
-              <input className="input mono" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="1234567890" />
-              <button className="btn btn-ghost" onClick={saveAppId} disabled={savingAppId || !appId.trim()}>
-                {savingAppId ? "Guardando…" : "Guardar"}
-              </button>
-            </div>
+        <div className="field" style={{ marginBottom: 0, maxWidth: 480 }}>
+          <label>App ID (la misma app de Meta para todos los tokens)</label>
+          <div className="row" style={{ gap: 8 }}>
+            <input className="input mono" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="1234567890" />
+            <button className="btn btn-ghost" onClick={saveAppId} disabled={savingAppId || !appId.trim()}>
+              {savingAppId ? "Guardando…" : "Guardar"}
+            </button>
           </div>
         </div>
       </div>
