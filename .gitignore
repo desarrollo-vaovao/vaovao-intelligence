@@ -15,3 +15,8 @@ node_modules/
 .next/
 intelligence-web/.env.local
 *.log
+
+# Claude Code
+.claude/
+CLAUDE.md
+graphify-out/
