@@ -95,8 +95,7 @@ async def build_pdf(client: Client, tokens: list[str], date_from: date, date_to:
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
     """
     report_data = await build_report_data(client, tokens, date_from, date_to, budget, currency)
-    # Playwright (sync) bloquearía el loop async si se llama directo; lo mandamos a un hilo.
-    pdf_bytes = await asyncio.to_thread(pdf_generator.generate_pdf, report_data)
+    pdf_bytes = await pdf_generator.generate_pdf(report_data)
 
     slug = "".join(ch if ch.isalnum() else "-" for ch in client.name.lower()).strip("-")
     filename = f"reporte-{slug}-{date_from.isoformat()}-a-{date_to.isoformat()}.pdf"

@@ -52,6 +52,14 @@ GENERATION_AVAILABLE = True
 _JOBS: dict[str, dict] = {}
 _JOB_TTL_SECONDS = 30 * 60
 
+# Cuántos reportes completos (traer datos de Meta + armar el PDF) corren a
+# la vez como máximo. Sin este límite, si 50-100 personas generan reportes
+# al mismo tiempo se dispararían cientos de llamadas simultáneas a la Graph
+# API (riesgo de rate limit de Meta) además de saturar memoria/CPU. Los
+# jobs de más simplemente esperan su turno en "processing" — no fallan.
+_GENERATION_CONCURRENCY = 6
+_generation_semaphore = asyncio.Semaphore(_GENERATION_CONCURRENCY)
+
 
 def _cleanup_jobs() -> None:
     cutoff = time.monotonic() - _JOB_TTL_SECONDS
@@ -65,9 +73,10 @@ async def _run_report_job(
     date_from, date_to, budget, currency: str,
 ) -> None:
     try:
-        pdf_bytes, filename = await report_builder.build_pdf(
-            client, tokens, date_from, date_to, budget, currency
-        )
+        async with _generation_semaphore:
+            pdf_bytes, filename = await report_builder.build_pdf(
+                client, tokens, date_from, date_to, budget, currency
+            )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
         _JOBS[job_id].update(status="error", error=str(e))

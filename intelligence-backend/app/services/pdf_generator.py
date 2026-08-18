@@ -12,7 +12,8 @@ Consume la estructura que produce meta_api.get_account_data():
     ad       = {name, image_url, insights{}}
 """
 from datetime import datetime
-from playwright.sync_api import sync_playwright
+
+from app.services import browser_pool
 
 # ── Formateadores ─────────────────────────────────────────────
 def fmt_number(n) -> str:
@@ -362,19 +363,7 @@ def generate_report_html(report_data: dict) -> str:
 </html>"""
 
 
-def generate_pdf(report_data: dict) -> bytes:
-    """Renderiza el HTML a PDF con Playwright (Chromium). Devuelve los bytes del PDF."""
+async def generate_pdf(report_data: dict) -> bytes:
+    """Renderiza el HTML a PDF con el navegador compartido (browser_pool)."""
     html = generate_report_html(report_data)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(args=[
-            "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
-        ])
-        try:
-            page = browser.new_page()
-            page.set_content(html, wait_until="networkidle")
-            return page.pdf(
-                format="Letter", landscape=True, print_background=True,
-                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-            )
-        finally:
-            browser.close()
+    return await browser_pool.render_pdf(html)
