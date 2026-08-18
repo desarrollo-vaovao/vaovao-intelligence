@@ -1,16 +1,25 @@
 """
 Módulo de Reportes — MOTOR ACTIVO.
 
-Genera el reporte de campañas de Meta en PDF y lo devuelve para descargar.
+Genera el reporte de campañas de Meta en PDF. La generación corre en
+segundo plano (puede tardar bastante con muchas campañas/anuncios): el
+endpoint de "generate" solo valida y arranca el trabajo, el frontend
+consulta el estado por job_id y descarga el PDF cuando está listo.
 Usa, en orden de preferencia:
   1. El Facebook conectado del usuario ("por usuario", recomendado)
   2. Los tokens centrales de la organización (uno por portafolio comercial)
 
 Endpoints:
-- GET  /reports/status        → si hay conexión con Meta y si la generación está lista
-- POST /reports/generate      → genera el PDF con datos reales y lo descarga
-- POST /reports/check-access  → verifica en vivo si podemos leer una cuenta
+- GET  /reports/status              → si hay conexión con Meta y si la generación está lista
+- POST /reports/generate            → valida y arranca la generación, devuelve job_id
+- GET  /reports/jobs/{job_id}       → estado del job (processing/done/error)
+- GET  /reports/jobs/{job_id}/pdf   → descarga el PDF una vez que el job está "done"
+- POST /reports/check-access        → verifica en vivo si podemos leer una cuenta
 """
+import asyncio
+import time
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -25,6 +34,8 @@ from app.schemas import (
     ReportRequest,
     CheckAccessRequest,
     CheckAccessResult,
+    ReportJobCreated,
+    ReportJobStatus,
 )
 from app.services import meta_api, report_builder
 
@@ -32,6 +43,42 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 # El motor de generación (Meta + PDF) ya está conectado.
 GENERATION_AVAILABLE = True
+
+# ── Jobs de generación en segundo plano ─────────────────────────
+# En memoria del proceso: alcanza para el tamaño de este equipo (un solo
+# servicio de Railway, sin múltiples workers). Si el proceso se reinicia
+# a mitad de un job, ese reporte se pierde y hay que regenerarlo — es un
+# costo aceptable frente a montar una cola real (Redis/Celery) para esto.
+_JOBS: dict[str, dict] = {}
+_JOB_TTL_SECONDS = 30 * 60
+
+
+def _cleanup_jobs() -> None:
+    cutoff = time.monotonic() - _JOB_TTL_SECONDS
+    stale = [jid for jid, j in _JOBS.items() if j["created_at"] < cutoff]
+    for jid in stale:
+        _JOBS.pop(jid, None)
+
+
+async def _run_report_job(
+    job_id: str, client: Client, tokens: list[str],
+    date_from, date_to, budget, currency: str,
+) -> None:
+    try:
+        pdf_bytes, filename = await report_builder.build_pdf(
+            client, tokens, date_from, date_to, budget, currency
+        )
+        _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
+    except ValueError as e:
+        _JOBS[job_id].update(status="error", error=str(e))
+    except meta_api.MetaApiError as e:
+        _JOBS[job_id].update(status="error", error=f"Meta: {e}")
+    except Exception as e:
+        print(f"[reports] Error generando el PDF (job {job_id}): {type(e).__name__}: {e}")
+        _JOBS[job_id].update(status="error", error=(
+            "No se pudo generar el PDF. Verifica que Playwright y Chromium estén "
+            "instalados (pip install playwright && playwright install chromium)."
+        ))
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -114,15 +161,19 @@ def report_status(
     )
 
 
-@router.post("/generate")
+@router.post("/generate", response_model=ReportJobCreated, status_code=202)
 async def generate_report(
     data: ReportRequest,
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Genera el reporte en PDF con datos reales de Meta y lo devuelve para descargar.
+    Valida todo lo que se puede validar rápido (cliente, fechas, tokens) y
+    arranca la generación del PDF en segundo plano. Devuelve un job_id para
+    consultar el progreso en GET /reports/jobs/{job_id}.
     """
+    _cleanup_jobs()
+
     # El cliente debe ser de la organización del usuario
     client = db.scalar(
         select(Client)
@@ -148,27 +199,45 @@ async def generate_report(
             "El motor de generación aún no está activo.",
         )
 
-    try:
-        pdf_bytes, filename = await report_builder.build_pdf(
-            client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
-        )
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    except meta_api.MetaApiError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Meta: {e}")
-    except Exception as e:
-        # Falla del motor de PDF (p. ej. Playwright/Chromium no instalado)
-        print(f"[reports] Error generando el PDF: {type(e).__name__}: {e}")
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "No se pudo generar el PDF. Verifica que Playwright y Chromium estén "
-            "instalados (pip install playwright && playwright install chromium).",
-        )
+    job_id = uuid.uuid4().hex
+    _JOBS[job_id] = {
+        "org_id": current.org_id,
+        "status": "processing",
+        "pdf": None,
+        "filename": None,
+        "error": None,
+        "created_at": time.monotonic(),
+    }
+    asyncio.create_task(_run_report_job(
+        job_id, client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
+    ))
+    return ReportJobCreated(job_id=job_id)
 
+
+def _get_owned_job(job_id: str, current: User) -> dict:
+    job = _JOBS.get(job_id)
+    if not job or job["org_id"] != current.org_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job no encontrado")
+    return job
+
+
+@router.get("/jobs/{job_id}", response_model=ReportJobStatus)
+def get_report_job(job_id: str, current: User = Depends(get_current_user)):
+    job = _get_owned_job(job_id, current)
+    return ReportJobStatus(
+        job_id=job_id, status=job["status"], error=job["error"], filename=job["filename"],
+    )
+
+
+@router.get("/jobs/{job_id}/pdf")
+def download_report_job(job_id: str, current: User = Depends(get_current_user)):
+    job = _get_owned_job(job_id, current)
+    if job["status"] != "done":
+        raise HTTPException(status.HTTP_409_CONFLICT, "El reporte todavía no está listo.")
     return Response(
-        content=pdf_bytes,
+        content=job["pdf"],
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{job["filename"]}"'},
     )
 
 

@@ -57,19 +57,30 @@ export const api = {
   getMetaTokenAdAccounts: (id) => request(`/organization/meta-credentials/${id}/adaccounts`),
 
   reportStatus: () => request("/reports/status"),
-  generateReport: async (body) => {
-    // El reporte vuelve como PDF (binario), no como JSON: se descarga directo.
-    const headers = { "Content-Type": "application/json" };
+  // La generación corre en segundo plano en el backend: esto arranca el job,
+  // hace polling del estado y descarga el PDF cuando queda listo.
+  // onProgress(status) es opcional, se llama en cada vuelta del polling.
+  generateReport: async (body, { onProgress } = {}) => {
+    const { job_id } = await request("/reports/generate", { method: "POST", body });
+
+    let job;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      job = await request(`/reports/jobs/${job_id}`);
+      if (onProgress) onProgress(job.status);
+      if (job.status === "done" || job.status === "error") break;
+    }
+    if (job.status === "error") {
+      throw new Error(job.error || "No se pudo generar el reporte.");
+    }
+
+    const headers = {};
     const token = getToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(`${BASE}/reports/generate`, {
-      method: "POST", headers, body: JSON.stringify(body),
-    });
-
+    const res = await fetch(`${BASE}/reports/jobs/${job_id}/pdf`, { headers });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data?.detail || "No se pudo generar el reporte.");
+      throw new Error(data?.detail || "No se pudo descargar el PDF.");
     }
 
     const blob = await res.blob();

@@ -18,6 +18,7 @@ export default function ReportesPage() {
   const [budget, setBudget] = useState("");
   const [currency, setCurrency] = useState("USD");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0); // segundos transcurridos generando
 
   useEffect(() => {
     (async () => {
@@ -48,7 +49,8 @@ export default function ReportesPage() {
   const incompleto = !clientId || !dateFrom || !dateTo;
 
   async function generate() {
-    setErr(""); setInfo(""); setBusy(true);
+    setErr(""); setInfo(""); setBusy(true); setProgress(0);
+    const start = Date.now();
     try {
       const filename = await api.generateReport({
         client_id: Number(clientId),
@@ -57,7 +59,7 @@ export default function ReportesPage() {
         date_to: dateTo,
         budget: budget ? Number(budget) : null,
         currency,
-      });
+      }, { onProgress: () => setProgress(Math.round((Date.now() - start) / 1000)) });
       setInfo(`Reporte descargado: ${filename}`);
     } catch (e) {
       setErr(e.message);
@@ -187,7 +189,9 @@ export default function ReportesPage() {
             disabled={busy || !ready || incompleto}
             style={{ width: "100%", justifyContent: "center", marginTop: 8 }}
           >
-            {busy ? "Generando…" : ready ? "Generar y descargar PDF" : "Generar (bloqueado)"}
+            {busy
+              ? (progress > 0 ? `Generando… (${progress}s, corre en segundo plano)` : "Iniciando…")
+              : ready ? "Generar y descargar PDF" : "Generar (bloqueado)"}
           </button>
         </div>
       </div>

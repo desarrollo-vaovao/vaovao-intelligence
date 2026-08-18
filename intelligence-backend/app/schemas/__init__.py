@@ -110,6 +110,18 @@ class CheckAccessResult(BaseModel):
     detail: str  # nombre de la cuenta si ok; motivo si no
 
 
+# ── Generación de reportes en segundo plano ─────────────────────
+class ReportJobCreated(BaseModel):
+    job_id: str
+
+
+class ReportJobStatus(BaseModel):
+    job_id: str
+    status: str  # "processing" | "done" | "error"
+    error: str | None = None
+    filename: str | None = None
+
+
 # ── Ad Account ────────────────────────────────────────────────
 class AdAccountCreate(BaseModel):
     label: str = Field(min_length=1, max_length=80)
