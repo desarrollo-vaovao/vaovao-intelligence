@@ -139,7 +139,12 @@ export default function ClientesPage() {
         </div>
       )}
 
-      {showClient && <ClientModal onClose={() => setShowClient(false)} onDone={() => { setShowClient(false); load(); }} />}
+      {showClient && (
+        <ClientModal
+          onClose={() => setShowClient(false)}
+          onDone={(client) => { setShowClient(false); load(); setAdFor(client); }}
+        />
+      )}
       {adFor && <AdAccountModal client={adFor} onClose={() => setAdFor(null)} onDone={() => { setAdFor(null); load(); }} />}
       {editTarget && (
         <EditClientModal
@@ -264,7 +269,7 @@ function ClientModal({ onClose, onDone }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   async function save() {
     setErr(""); setBusy(true);
-    try { await api.createClient({ name, type }); onDone(); }
+    try { const client = await api.createClient({ name, type }); onDone(client); }
     catch (e) { setErr(e.message); setBusy(false); }
   }
   return (

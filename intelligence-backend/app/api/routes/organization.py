@@ -22,7 +22,6 @@ from app.core.database import get_db
 from app.core import crypto
 from app.models import User, Organization, MetaCentralToken, Client, UserRole
 from app.schemas import (
-    MetaAppIdIn,
     MetaCentralTokenIn,
     MetaCentralTokenOut,
     MetaCredentialsStatus,
@@ -39,17 +38,23 @@ def _status(org: Organization, db: Session) -> MetaCredentialsStatus:
         .order_by(MetaCentralToken.label)
     ).all()
     tokens = []
+    undecryptable = 0
     for row in rows:
         token = crypto.decrypt(row.token_encrypted)
-        if token:  # si no descifra (p. ej. cambió ENCRYPTION_KEY), no lo listamos
+        if token:
             tokens.append(MetaCentralTokenOut(
                 id=row.id, label=row.label,
                 token_masked=crypto.mask(token), created_at=row.created_at,
             ))
+        else:
+            # No descifra (típicamente ENCRYPTION_KEY distinta a la que se usó
+            # para guardarlo) — se cuenta aparte para no ocultar que el dato
+            # sigue ahí, solo que la llave no coincide.
+            undecryptable += 1
     return MetaCredentialsStatus(
         configured=len(tokens) > 0,
-        meta_app_id=org.meta_app_id,
         tokens=tokens,
+        undecryptable_count=undecryptable,
     )
 
 
@@ -59,19 +64,6 @@ def get_meta_credentials(
     db: Session = Depends(get_db),
 ):
     org = db.get(Organization, current.org_id)
-    return _status(org, db)
-
-
-@router.put("/meta-app-id", response_model=MetaCredentialsStatus)
-def set_meta_app_id(
-    data: MetaAppIdIn,
-    current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
-    db: Session = Depends(get_db),
-):
-    org = db.get(Organization, current.org_id)
-    org.meta_app_id = data.meta_app_id
-    db.commit()
-    db.refresh(org)
     return _status(org, db)
 
 

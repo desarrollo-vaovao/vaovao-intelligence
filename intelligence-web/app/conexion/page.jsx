@@ -173,25 +173,15 @@ export default function ConexionPage() {
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
 
-  const [appId, setAppId] = useState("");
-  const [savingAppId, setSavingAppId] = useState(false);
-
   const [showAdd, setShowAdd] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [accountsTarget, setAccountsTarget] = useState(null);
 
   async function load() {
-    try { const s = await api.getMeta(); setStatus(s); setAppId(s.meta_app_id || ""); }
+    try { setStatus(await api.getMeta()); }
     catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); }, []);
-
-  async function saveAppId() {
-    setErr(""); setSavingAppId(true);
-    try { await api.setMetaAppId({ meta_app_id: appId }); await load(); }
-    catch (e) { setErr(e.message); }
-    finally { setSavingAppId(false); }
-  }
 
   const connected = status?.configured;
   const tokens = status?.tokens || [];
@@ -217,25 +207,24 @@ export default function ConexionPage() {
 
       {err && <div className="err">{err}</div>}
       {note && <div className="notice" style={{ marginBottom: 16 }}><div>{note}</div></div>}
+      {status?.undecryptable_count > 0 && (
+        <div className="notice" style={{ marginBottom: 16 }}>
+          <div>
+            Hay {status.undecryptable_count} credencial(es) de Meta guardadas que el servidor
+            no pudo leer (la llave de cifrado del servidor no coincide con la que se usó para
+            guardarlas). Revisa <code>ENCRYPTION_KEY</code> — los datos siguen ahí, no se perdieron.
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ padding: 24, marginBottom: 24 }}>
-        <div className="row" style={{ marginBottom: 18 }}>
+        <div className="row">
           <span className={`pulse ${connected ? "on" : "off"}`} />
           <h3 style={{ fontSize: 16 }}>
             {status === null ? "Comprobando…" : connected ? "Conectado a Meta" : "Sin conectar"}
           </h3>
           <div className="spacer" />
           {connected && <span className="badge badge-signal">Listo para reportes</span>}
-        </div>
-
-        <div className="field" style={{ marginBottom: 0, maxWidth: 480 }}>
-          <label>App ID (la misma app de Meta para todos los tokens)</label>
-          <div className="row" style={{ gap: 8 }}>
-            <input className="input mono" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="1234567890" />
-            <button className="btn btn-ghost" onClick={saveAppId} disabled={savingAppId || !appId.trim()}>
-              {savingAppId ? "Guardando…" : "Guardar"}
-            </button>
-          </div>
         </div>
       </div>
 

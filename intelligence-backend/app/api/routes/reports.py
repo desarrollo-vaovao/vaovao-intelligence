@@ -58,6 +58,7 @@ def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
     Devuelve (tokens, motivo_de_error). Si hay al menos un token, motivo es None.
     """
     tokens: list[str] = []
+    undecryptable = 0
 
     fb_conn = db.scalar(
         select(FacebookConnection).where(FacebookConnection.user_id == current.id)
@@ -66,6 +67,8 @@ def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
         token = crypto.decrypt(fb_conn.token_encrypted)
         if token:
             tokens.append(token)
+        else:
+            undecryptable += 1
 
     central_rows = db.scalars(
         select(MetaCentralToken).where(MetaCentralToken.org_id == current.org_id)
@@ -74,8 +77,19 @@ def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
         token = crypto.decrypt(row.token_encrypted)
         if token:
             tokens.append(token)
+        else:
+            undecryptable += 1
 
     if not tokens:
+        if undecryptable:
+            # Hay credenciales guardadas pero ninguna se pudo descifrar — casi
+            # siempre ENCRYPTION_KEY cambió o no coincide con la del entorno
+            # donde se guardaron. Distinto de "nunca se conectó nada".
+            return [], (
+                f"Hay {undecryptable} credencial(es) de Meta guardadas pero no se "
+                "pudieron leer (ENCRYPTION_KEY no coincide con la que se usó para "
+                "guardarlas). Revisa la variable ENCRYPTION_KEY del servidor."
+            )
         return [], "No has conectado tu Facebook y no hay tokens centrales (Conexión Meta)."
     return tokens, None
 

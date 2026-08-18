@@ -53,10 +53,6 @@ class UserUpdate(BaseModel):
 # Puede haber varios tokens centrales (uno por portafolio comercial
 # independiente, ej. "Vao Vao", "Menos Pausa") — un solo System User no puede
 # cruzar de un portafolio a otro en Meta.
-class MetaAppIdIn(BaseModel):
-    meta_app_id: str = Field(min_length=3, max_length=40)
-
-
 class MetaCentralTokenIn(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     system_user_token: str = Field(min_length=10)
@@ -73,8 +69,10 @@ class MetaCentralTokenOut(BaseModel):
 class MetaCredentialsStatus(BaseModel):
     """Estado de la conexión con Meta — NUNCA expone ningún token completo."""
     configured: bool
-    meta_app_id: str | None = None
     tokens: list[MetaCentralTokenOut] = Field(default_factory=list)
+    # Tokens guardados que existen en la base pero no se pudieron descifrar
+    # (típicamente ENCRYPTION_KEY distinta a la que se usó para guardarlos).
+    undecryptable_count: int = 0
 
 
 # ── Reportes (módulo preparado, se activa al conectar Meta) ────
