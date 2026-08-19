@@ -178,6 +178,20 @@ async def _get_all(client: httpx.AsyncClient, path: str, token: str, params: dic
     return items
 
 
+async def _labeled(label: str, coro):
+    """
+    Envuelve una petición con una etiqueta legible: si Meta rechaza esa
+    llamada puntual, el error que ve el usuario (y que queda en los logs)
+    dice CUÁL llamada falló ("Insights de anuncios de la campaña 'X'"), no
+    solo el mensaje genérico de Meta. Sin esto, diagnosticar cuál de las
+    varias llamadas en paralelo era la pesada implicaba adivinar a ciegas.
+    """
+    try:
+        return await coro
+    except MetaApiError as e:
+        raise MetaApiError(f"{label}: {e}") from e
+
+
 async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
     """
     Verifica si el token puede LEER una cuenta publicitaria.
@@ -271,43 +285,55 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        campaigns = await get_campaigns(client, token, ad_account_id)
+        campaigns = await _labeled("Listado de campañas", get_campaigns(client, token, ad_account_id))
         if not campaigns:
             return {"campaigns": [], "total_spend": 0.0}
 
         api_fields = _fields_for_campaigns(campaigns)
 
-        async def _ad_insights_for_campaign(campaign_id: str) -> list[dict]:
-            return await _get_all(client, f"{campaign_id}/insights", token, {
-                "level": "ad",
-                "fields": "ad_id," + ",".join(api_fields),
-                "time_range": time_range,
-                "limit": _INSIGHTS_PAGE_SIZE,
-            })
+        async def _ad_insights_for_campaign(campaign: dict) -> list[dict]:
+            return await _labeled(
+                f"Insights de anuncios de la campaña '{campaign.get('name', campaign['id'])}'",
+                _get_all(client, f"{campaign['id']}/insights", token, {
+                    "level": "ad",
+                    "fields": "ad_id," + ",".join(api_fields),
+                    "time_range": time_range,
+                    "limit": _INSIGHTS_PAGE_SIZE,
+                }),
+            )
 
-        campaign_insights, ad_insights_by_campaign, ads = await asyncio.gather(
-            _get_all(client, f"{ad_account_id}/insights", token, {
+        async def _ads_for_campaign(campaign: dict) -> list[dict]:
+            return await _labeled(
+                f"Listado de anuncios de la campaña '{campaign.get('name', campaign['id'])}'",
+                _get_all(client, f"{campaign['id']}/ads", token, {
+                    # object_story_spec NO se pide: es el campo más pesado del
+                    # creativo y no se usa en ningún lado (solo se lee
+                    # thumbnail_url/image_url). Pedirlo de más, sin acotar por
+                    # campaña, era otro contribuyente a "reduce the amount of
+                    # data you're asking for" en la cuenta completa.
+                    "fields": "id,name,creative{thumbnail_url,image_url}",
+                    "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
+                                              "value": ["ACTIVE", "PAUSED"]}]),
+                    "limit": _PAGE_SIZE,
+                }),
+            )
+
+        campaign_insights, ad_insights_by_campaign, ads_by_campaign_list = await asyncio.gather(
+            _labeled("Insights de campañas", _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "campaign",
                 "fields": "campaign_id," + ",".join(api_fields),
                 "time_range": time_range,
                 "limit": _INSIGHTS_PAGE_SIZE,
-            }),
-            asyncio.gather(*(_ad_insights_for_campaign(c["id"]) for c in campaigns)),
-            _get_all(client, f"{ad_account_id}/ads", token, {
-                "fields": "id,name,campaign_id,creative{thumbnail_url,image_url,object_story_spec}",
-                "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
-                                          "value": ["ACTIVE", "PAUSED"]}]),
-                "limit": _PAGE_SIZE,
-            }),
+            })),
+            asyncio.gather(*(_ad_insights_for_campaign(c) for c in campaigns)),
+            asyncio.gather(*(_ads_for_campaign(c) for c in campaigns)),
         )
 
         insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)
                                 for i in campaign_insights if i.get("campaign_id")}
         insights_by_ad = {i["ad_id"]: _with_derived_metrics(i)
                           for group in ad_insights_by_campaign for i in group if i.get("ad_id")}
-        ads_by_campaign: dict[str, list[dict]] = {}
-        for ad in ads:
-            ads_by_campaign.setdefault(ad.get("campaign_id"), []).append(ad)
+        ads_by_campaign = {c["id"]: ads for c, ads in zip(campaigns, ads_by_campaign_list)}
 
     campaign_data = []
     for c in campaigns:
