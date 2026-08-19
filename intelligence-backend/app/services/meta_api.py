@@ -63,6 +63,25 @@ METRICS_BY_OBJECTIVE = {
 # caro es el NÚMERO de llamadas, no el número de campos por llamada.
 _ALL_METRICS = sorted({m for metrics in METRICS_BY_OBJECTIVE.values() for m in metrics})
 
+# messaging_conversation_started_7d NO es un campo válido en el endpoint de
+# insights a nivel de cuenta (act_<id>/insights?level=...) — Meta lo rechaza
+# con "(#100) ... is not valid for fields param" ahí, aunque sí lo era en el
+# endpoint del objeto individual (campaign_id/insights) que usaba el código
+# viejo. Se pide "actions" (ya está en la unión) y se deriva de ahí.
+_API_FIELDS = [m for m in _ALL_METRICS if m != "messaging_conversation_started_7d"]
+_MESSAGING_ACTION_TYPES = {"onsite_conversion.messaging_conversation_started_7d",
+                           "messaging_conversation_started_7d"}
+
+
+def _with_derived_metrics(insights: dict) -> dict:
+    """Agrega messaging_conversation_started_7d al insight, leyéndolo de
+    `actions` (ver _API_FIELDS)."""
+    for a in insights.get("actions") or []:
+        if a.get("action_type") in _MESSAGING_ACTION_TYPES:
+            insights["messaging_conversation_started_7d"] = a.get("value")
+            break
+    return insights
+
 # Cuántos resultados pedimos por página al paginar (campañas, insights, anuncios).
 _PAGE_SIZE = 200
 
@@ -211,13 +230,13 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
         campaign_insights, ad_insights, ads = await asyncio.gather(
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "campaign",
-                "fields": "campaign_id," + ",".join(_ALL_METRICS),
+                "fields": "campaign_id," + ",".join(_API_FIELDS),
                 "time_range": time_range,
                 "limit": _PAGE_SIZE,
             }),
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "ad",
-                "fields": "ad_id," + ",".join(_ALL_METRICS),
+                "fields": "ad_id," + ",".join(_API_FIELDS),
                 "time_range": time_range,
                 "limit": _PAGE_SIZE,
             }),
@@ -229,8 +248,10 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             }),
         )
 
-        insights_by_campaign = {i["campaign_id"]: i for i in campaign_insights if i.get("campaign_id")}
-        insights_by_ad = {i["ad_id"]: i for i in ad_insights if i.get("ad_id")}
+        insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)
+                                for i in campaign_insights if i.get("campaign_id")}
+        insights_by_ad = {i["ad_id"]: _with_derived_metrics(i)
+                          for i in ad_insights if i.get("ad_id")}
         ads_by_campaign: dict[str, list[dict]] = {}
         for ad in ads:
             ads_by_campaign.setdefault(ad.get("campaign_id"), []).append(ad)
