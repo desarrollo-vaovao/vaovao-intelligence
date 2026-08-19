@@ -62,25 +62,38 @@ METRICS_BY_OBJECTIVE = {
     "DEFAULT":         ["impressions", "reach", "clicks", "ctr", "cpc", "spend"],
 }
 
-# Unión de TODAS las métricas posibles (de todos los objetivos): se piden de
-# una vez para toda la cuenta, y luego cada campaña/anuncio solo lee las
-# suyas según su objetivo. Pedir de más no cuesta llamadas extra a Meta —lo
-# caro es el NÚMERO de llamadas, no el número de campos por llamada.
-_ALL_METRICS = sorted({m for metrics in METRICS_BY_OBJECTIVE.values() for m in metrics})
-
 # messaging_conversation_started_7d NO es un campo válido en el endpoint de
 # insights a nivel de cuenta (act_<id>/insights?level=...) — Meta lo rechaza
 # con "(#100) ... is not valid for fields param" ahí, aunque sí lo era en el
 # endpoint del objeto individual (campaign_id/insights) que usaba el código
-# viejo. Se pide "actions" (ya está en la unión) y se deriva de ahí.
-_API_FIELDS = [m for m in _ALL_METRICS if m != "messaging_conversation_started_7d"]
+# viejo. Se pide "actions" y se deriva de ahí.
 _MESSAGING_ACTION_TYPES = {"onsite_conversion.messaging_conversation_started_7d",
                            "messaging_conversation_started_7d"}
 
 
+def _fields_for_campaigns(campaigns: list[dict]) -> list[str]:
+    """
+    Solo las métricas que de verdad necesitan LOS OBJETIVOS presentes en esta
+    cuenta (no la unión de TODOS los objetivos posibles). "actions" es el
+    campo más caro de calcular en bloque —Meta devuelve un arreglo variable
+    de eventos por fila— y solo lo necesitan MESSAGES/PAGE_LIKES; pedirlo
+    siempre, para cuentas que ni lo usan, es lo que dispara
+    "Please reduce the amount of data you're asking for".
+    """
+    objectives = {c.get("objective", "DEFAULT") for c in campaigns}
+    metrics = {m for obj in objectives
+               for m in METRICS_BY_OBJECTIVE.get(obj, METRICS_BY_OBJECTIVE["DEFAULT"])}
+    if "messaging_conversation_started_7d" in metrics:
+        # No es un campo válido a este nivel (ver arriba) — se deriva de
+        # "actions", así que hay que pedir "actions" en su lugar.
+        metrics.discard("messaging_conversation_started_7d")
+        metrics.add("actions")
+    return sorted(metrics)
+
+
 def _with_derived_metrics(insights: dict) -> dict:
     """Agrega messaging_conversation_started_7d al insight, leyéndolo de
-    `actions` (ver _API_FIELDS)."""
+    `actions` (ver _fields_for_campaigns)."""
     for a in insights.get("actions") or []:
         if a.get("action_type") in _MESSAGING_ACTION_TYPES:
             insights["messaging_conversation_started_7d"] = a.get("value")
@@ -254,16 +267,17 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
         if not campaigns:
             return {"campaigns": [], "total_spend": 0.0}
 
+        api_fields = _fields_for_campaigns(campaigns)
         campaign_insights, ad_insights, ads = await asyncio.gather(
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "campaign",
-                "fields": "campaign_id," + ",".join(_API_FIELDS),
+                "fields": "campaign_id," + ",".join(api_fields),
                 "time_range": time_range,
                 "limit": _INSIGHTS_PAGE_SIZE,
             }),
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "ad",
-                "fields": "ad_id," + ",".join(_API_FIELDS),
+                "fields": "ad_id," + ",".join(api_fields),
                 "time_range": time_range,
                 "limit": _INSIGHTS_PAGE_SIZE,
             }),
