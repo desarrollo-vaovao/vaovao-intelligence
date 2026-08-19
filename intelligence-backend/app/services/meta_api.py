@@ -82,8 +82,16 @@ def _with_derived_metrics(insights: dict) -> dict:
             break
     return insights
 
-# Cuántos resultados pedimos por página al paginar (campañas, insights, anuncios).
+# Cuántos resultados pedimos por página al listar campañas/anuncios (objetos
+# livianos: solo id/nombre/creativo).
 _PAGE_SIZE = 200
+
+# Cuántos resultados pedimos por página al pedir INSIGHTS. Cada fila de
+# insights es mucho más pesada de calcular que una de listado (Meta agrega
+# múltiples métricas sobre todo el rango de fechas), así que una página de
+# 200 en un reporte mensual con muchos anuncios hace que Meta responda
+# "Please reduce the amount of data you're asking for" en vez de rate limit.
+_INSIGHTS_PAGE_SIZE = int(os.getenv("META_INSIGHTS_PAGE_SIZE", "50"))
 
 
 class MetaApiError(Exception):
@@ -232,13 +240,13 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
                 "level": "campaign",
                 "fields": "campaign_id," + ",".join(_API_FIELDS),
                 "time_range": time_range,
-                "limit": _PAGE_SIZE,
+                "limit": _INSIGHTS_PAGE_SIZE,
             }),
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "ad",
                 "fields": "ad_id," + ",".join(_API_FIELDS),
                 "time_range": time_range,
-                "limit": _PAGE_SIZE,
+                "limit": _INSIGHTS_PAGE_SIZE,
             }),
             _get_all(client, f"{ad_account_id}/ads", token, {
                 "fields": "id,name,campaign_id,creative{thumbnail_url,image_url,object_story_spec}",
