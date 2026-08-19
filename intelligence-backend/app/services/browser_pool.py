@@ -54,7 +54,11 @@ async def render_pdf(html: str) -> bytes:
     async with _render_semaphore:
         page = await _browser.new_page()
         try:
-            await page.set_content(html, wait_until="networkidle")
+            # "load" (recursos cargados) en vez de "networkidle" (500ms SIN
+            # actividad de red): con muchas imágenes de anuncios de Meta,
+            # networkidle sumaba esa espera de más incluso cuando el
+            # contenido ya estaba listo para imprimir.
+            await page.set_content(html, wait_until="load")
             return await page.pdf(
                 format="Letter", landscape=True, print_background=True,
                 margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},

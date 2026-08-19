@@ -116,7 +116,7 @@ _PAGE_SIZE = 200
 # insights antes de darse por vencido, y cada cuánto se pregunta por su
 # estado mientras tanto (ver _run_insights_job).
 _INSIGHTS_JOB_MAX_WAIT = float(os.getenv("META_INSIGHTS_JOB_MAX_WAIT", "180"))
-_INSIGHTS_JOB_POLL_INTERVAL = 2.0
+_INSIGHTS_JOB_POLL_INTERVAL = 1.0
 
 
 class MetaApiError(Exception):
