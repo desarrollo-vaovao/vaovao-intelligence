@@ -62,13 +62,19 @@ METRICS_BY_OBJECTIVE = {
     "DEFAULT":         ["impressions", "reach", "clicks", "ctr", "cpc", "spend"],
 }
 
-# messaging_conversation_started_7d NO es un campo válido en el endpoint de
-# insights a nivel de cuenta (act_<id>/insights?level=...) — Meta lo rechaza
-# con "(#100) ... is not valid for fields param" ahí, aunque sí lo era en el
-# endpoint del objeto individual (campaign_id/insights) que usaba el código
-# viejo. Se pide "actions" y se deriva de ahí.
-_MESSAGING_ACTION_TYPES = {"onsite_conversion.messaging_conversation_started_7d",
-                           "messaging_conversation_started_7d"}
+# Algunas métricas NO son campos válidos para pedir directo en el endpoint
+# de insights en bloque (a nivel de cuenta, o dentro de un job asíncrono) —
+# Meta las rechaza con errores tipo "(#100) ... is not valid for fields
+# param" o "(#100) Tried accessing nonexisting summary field", aunque sí lo
+# eran en el endpoint del objeto individual (campaign_id/insights) que
+# usaba el código viejo. Todas están disponibles vía el arreglo `actions`
+# (que sí es válido ahí), filtrando por action_type — así que en vez de
+# pedirlas directo, se pide "actions" y se derivan de ahí.
+_DERIVED_FROM_ACTIONS = {
+    "messaging_conversation_started_7d": {"onsite_conversion.messaging_conversation_started_7d",
+                                          "messaging_conversation_started_7d"},
+    "post_engagement": {"post_engagement", "onsite_conversion.post_save"},
+}
 
 
 def _fields_for_campaigns(campaigns: list[dict]) -> list[str]:
@@ -76,28 +82,30 @@ def _fields_for_campaigns(campaigns: list[dict]) -> list[str]:
     Solo las métricas que de verdad necesitan LOS OBJETIVOS presentes en esta
     cuenta (no la unión de TODOS los objetivos posibles). "actions" es el
     campo más caro de calcular en bloque —Meta devuelve un arreglo variable
-    de eventos por fila— y solo lo necesitan MESSAGES/PAGE_LIKES; pedirlo
-    siempre, para cuentas que ni lo usan, es lo que dispara
-    "Please reduce the amount of data you're asking for".
+    de eventos por fila— y solo lo necesitan MESSAGES/POST_ENGAGEMENT/
+    PAGE_LIKES; pedirlo siempre, para cuentas que ni lo usan, es lo que
+    dispara "Please reduce the amount of data you're asking for".
     """
     objectives = {c.get("objective", "DEFAULT") for c in campaigns}
     metrics = {m for obj in objectives
                for m in METRICS_BY_OBJECTIVE.get(obj, METRICS_BY_OBJECTIVE["DEFAULT"])}
-    if "messaging_conversation_started_7d" in metrics:
-        # No es un campo válido a este nivel (ver arriba) — se deriva de
-        # "actions", así que hay que pedir "actions" en su lugar.
-        metrics.discard("messaging_conversation_started_7d")
+    if metrics & _DERIVED_FROM_ACTIONS.keys():
+        # Ninguna de estas es un campo válido a este nivel (ver arriba) — se
+        # derivan de "actions", así que hay que pedir "actions" en su lugar.
+        metrics -= _DERIVED_FROM_ACTIONS.keys()
         metrics.add("actions")
     return sorted(metrics)
 
 
 def _with_derived_metrics(insights: dict) -> dict:
-    """Agrega messaging_conversation_started_7d al insight, leyéndolo de
-    `actions` (ver _fields_for_campaigns)."""
-    for a in insights.get("actions") or []:
-        if a.get("action_type") in _MESSAGING_ACTION_TYPES:
-            insights["messaging_conversation_started_7d"] = a.get("value")
-            break
+    """Agrega las métricas de _DERIVED_FROM_ACTIONS al insight, leyéndolas
+    de `actions` (ver _fields_for_campaigns)."""
+    actions = insights.get("actions") or []
+    for metric, action_types in _DERIVED_FROM_ACTIONS.items():
+        for a in actions:
+            if a.get("action_type") in action_types:
+                insights[metric] = a.get("value")
+                break
     return insights
 
 # Cuántos resultados pedimos por página al listar campañas/anuncios (objetos
