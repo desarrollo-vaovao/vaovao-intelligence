@@ -110,7 +110,7 @@ export default function ReportesPage() {
               <option value="">— Selecciona un cliente —</option>
               {clients.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}{c.type === "multi_station" ? " (multi-estación)" : ""}
+                  {c.name}
                 </option>
               ))}
             </select>

@@ -18,6 +18,7 @@ Mejoras respecto al Node:
 """
 import os
 import json
+import random
 import asyncio
 import httpx
 
@@ -25,9 +26,24 @@ API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 TIMEOUT = httpx.Timeout(30.0)
 
-# Cuántas llamadas a la Graph API dejamos en vuelo al mismo tiempo.
-# Sin límite se puede topar con el rate limit de Meta si hay muchos anuncios.
-_MAX_CONCURRENCY = 8
+# Cuántas llamadas a la Graph API dejamos en vuelo al mismo tiempo EN TODO EL
+# PROCESO (no por request ni por cuenta): un solo semáforo a nivel de módulo,
+# compartido por todos los jobs y usuarios que estén generando reportes a la
+# vez. Antes, cada llamada a get_account_data() creaba su propio semáforo, así
+# que un cliente multi-estación (varias cuentas publicitarias, ej. OLR)
+# multiplicaba la concurrencia por el número de cuentas al pedirlas todas en
+# paralelo — con 6 estaciones eso son hasta 48 llamadas simultáneas en vez de
+# 8, lo que dispara el rate limit de Meta ("User request limit reached").
+_MAX_CONCURRENCY = int(os.getenv("META_MAX_CONCURRENCY", "8"))
+_semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
+
+# Códigos de error de Meta que indican rate limiting (transitorio: vale la
+# pena esperar y reintentar en vez de tirar todo el reporte).
+# 4 = "Application request limit reached", 17 = "User request limit reached",
+# 32 = "Page request limit reached", 613 = límite de la API de anuncios.
+_RATE_LIMIT_CODES = {4, 17, 32, 613}
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 2.0  # segundos; backoff exponencial con jitter
 
 # Métricas que pedimos según el objetivo de la campaña (igual que en Node)
 METRICS_BY_OBJECTIVE = {
@@ -50,17 +66,28 @@ def _metrics_for(objective: str) -> list[str]:
     return METRICS_BY_OBJECTIVE.get(objective, METRICS_BY_OBJECTIVE["DEFAULT"])
 
 
-async def _get(client: httpx.AsyncClient, sem: asyncio.Semaphore, path: str,
-                token: str, params: dict) -> dict:
-    """GET a la Graph API con el token. Devuelve el JSON o lanza MetaApiError."""
+async def _get(client: httpx.AsyncClient, path: str, token: str, params: dict) -> dict:
+    """
+    GET a la Graph API con el token, respetando el límite global de
+    concurrencia. Si Meta responde con un código de rate limit, reintenta con
+    backoff exponencial (+ jitter) antes de darse por vencido.
+    Devuelve el JSON o lanza MetaApiError.
+    """
     params = {**params, "access_token": token}
-    async with sem:
-        resp = await client.get(f"{BASE_URL}/{path}", params=params)
-    data = resp.json()
-    if resp.status_code != 200:
-        err = (data.get("error") or {}).get("message", "Error desconocido de Meta")
-        raise MetaApiError(err)
-    return data
+    for attempt in range(_MAX_RETRIES + 1):
+        async with _semaphore:
+            resp = await client.get(f"{BASE_URL}/{path}", params=params)
+        data = resp.json()
+        if resp.status_code == 200:
+            return data
+
+        error = data.get("error") or {}
+        is_rate_limited = error.get("code") in _RATE_LIMIT_CODES or error.get("is_transient")
+        if is_rate_limited and attempt < _MAX_RETRIES:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
+            await asyncio.sleep(delay)
+            continue
+        raise MetaApiError(error.get("message", "Error desconocido de Meta"))
 
 
 async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
@@ -70,8 +97,7 @@ async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, st
     """
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-            data = await _get(client, sem, ad_account_id, token, {"fields": "name,account_status"})
+            data = await _get(client, ad_account_id, token, {"fields": "name,account_status"})
         return True, data.get("name", ad_account_id)
     except MetaApiError as e:
         return False, str(e)
@@ -95,10 +121,9 @@ async def check_account_access_with_fallback(tokens: list[str], ad_account_id: s
     return result
 
 
-async def get_campaigns(client: httpx.AsyncClient, sem: asyncio.Semaphore,
-                        token: str, ad_account_id: str) -> list[dict]:
+async def get_campaigns(client: httpx.AsyncClient, token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
-    data = await _get(client, sem, f"{ad_account_id}/campaigns", token, {
+    data = await _get(client, f"{ad_account_id}/campaigns", token, {
         "fields": "id,name,objective,status,daily_budget,lifetime_budget",
         "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
                                   "value": ["ACTIVE", "PAUSED"]}]),
@@ -107,11 +132,11 @@ async def get_campaigns(client: httpx.AsyncClient, sem: asyncio.Semaphore,
     return data.get("data", [])
 
 
-async def get_campaign_insights(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+async def get_campaign_insights(client: httpx.AsyncClient, token: str,
                                 campaign_id: str, objective: str,
                                 date_from: str, date_to: str) -> dict | None:
     """Números de rendimiento de UNA campaña en el rango de fechas."""
-    data = await _get(client, sem, f"{campaign_id}/insights", token, {
+    data = await _get(client, f"{campaign_id}/insights", token, {
         "fields": ",".join(_metrics_for(objective)),
         "time_range": json.dumps({"since": date_from, "until": date_to}),
         "level": "campaign",
@@ -120,23 +145,23 @@ async def get_campaign_insights(client: httpx.AsyncClient, sem: asyncio.Semaphor
     return rows[0] if rows else None
 
 
-async def get_campaign_ads(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+async def get_campaign_ads(client: httpx.AsyncClient, token: str,
                            campaign_id: str, objective: str,
                            date_from: str, date_to: str) -> list[dict]:
     """Anuncios de una campaña con su rendimiento e imagen, ordenados por desempeño."""
     metrics = _metrics_for(objective)
 
-    adsets = (await _get(client, sem, f"{campaign_id}/adsets", token,
+    adsets = (await _get(client, f"{campaign_id}/adsets", token,
                          {"fields": "id,name", "limit": 20})).get("data", [])
 
     async def _ads_for_adset(adset: dict) -> list[dict]:
-        ads = (await _get(client, sem, f"{adset['id']}/ads", token, {
+        ads = (await _get(client, f"{adset['id']}/ads", token, {
             "fields": "id,name,creative{thumbnail_url,image_url,object_story_spec}",
             "limit": 20,
         })).get("data", [])
 
         async def _with_insights(ad: dict) -> dict:
-            insights_rows = (await _get(client, sem, f"{ad['id']}/insights", token, {
+            insights_rows = (await _get(client, f"{ad['id']}/insights", token, {
                 "fields": ",".join(metrics),
                 "time_range": json.dumps({"since": date_from, "until": date_to}),
             })).get("data", [])
@@ -202,14 +227,13 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     Todas las campañas (y, dentro de cada una, insights + anuncios) se piden en paralelo.
     """
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-        campaigns = await get_campaigns(client, sem, token, ad_account_id)
+        campaigns = await get_campaigns(client, token, ad_account_id)
 
         async def _for_campaign(campaign: dict) -> dict:
             objective = campaign.get("objective", "DEFAULT")
             insights, ads = await asyncio.gather(
-                get_campaign_insights(client, sem, token, campaign["id"], objective, date_from, date_to),
-                get_campaign_ads(client, sem, token, campaign["id"], objective, date_from, date_to),
+                get_campaign_insights(client, token, campaign["id"], objective, date_from, date_to),
+                get_campaign_ads(client, token, campaign["id"], objective, date_from, date_to),
             )
             spend = float((insights or {}).get("spend", 0) or 0)
             return {
@@ -229,11 +253,11 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
 
 
 # ── Listado de cuentas (acceso directo + portafolios comerciales) ──────────
-async def _collect(client: httpx.AsyncClient, sem: asyncio.Semaphore, token: str,
+async def _collect(client: httpx.AsyncClient, token: str,
                    path: str, source: str, out: dict, warnings: list) -> None:
     """Pide una lista de cuentas y las acumula en `out` (dedup por id)."""
     try:
-        data = await _get(client, sem, path, token, {
+        data = await _get(client, path, token, {
             "fields": "account_id,name,account_status",
             "limit": 250,
         })
@@ -279,30 +303,28 @@ async def list_ad_accounts(token: str) -> dict:
     businesses: list = []
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-
         # 1. Acceso directo (en paralelo con traer los portafolios)
         async def _load_businesses() -> list[dict]:
             try:
-                biz = await _get(client, sem, "me/businesses", token, {"fields": "id,name", "limit": 100})
+                biz = await _get(client, "me/businesses", token, {"fields": "id,name", "limit": 100})
                 return [{"id": b.get("id"), "name": b.get("name")} for b in biz.get("data", [])]
             except MetaApiError as e:
                 warnings.append(f"Portafolios: {e}")
                 return []
 
         _, businesses = await asyncio.gather(
-            _collect(client, sem, token, "me/adaccounts", "Acceso directo", out, warnings),
+            _collect(client, token, "me/adaccounts", "Acceso directo", out, warnings),
             _load_businesses(),
         )
 
         # 2 y 3. A través de los portafolios comerciales, todos en paralelo
         if businesses:
             await asyncio.gather(*(
-                _collect(client, sem, token, f"{b['id']}/owned_ad_accounts",
+                _collect(client, token, f"{b['id']}/owned_ad_accounts",
                         f"Portafolio: {b.get('name') or b['id']}", out, warnings)
                 for b in businesses
             ), *(
-                _collect(client, sem, token, f"{b['id']}/client_ad_accounts",
+                _collect(client, token, f"{b['id']}/client_ad_accounts",
                         f"Compartida con: {b.get('name') or b['id']}", out, warnings)
                 for b in businesses
             ))
