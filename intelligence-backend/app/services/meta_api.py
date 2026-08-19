@@ -104,19 +104,19 @@ def _with_derived_metrics(insights: dict) -> dict:
 # livianos: solo id/nombre/creativo).
 _PAGE_SIZE = 200
 
-# Cuántos resultados pedimos por página al pedir INSIGHTS. Cada fila de
-# insights es mucho más pesada de calcular que una de listado (Meta agrega
-# múltiples métricas sobre todo el rango de fechas), así que una página de
-# 200 en un reporte mensual con muchos anuncios hace que Meta responda
-# "Please reduce the amount of data you're asking for" en vez de rate limit.
-_INSIGHTS_PAGE_SIZE = int(os.getenv("META_INSIGHTS_PAGE_SIZE", "50"))
+# Cuánto se espera a que Meta termine de calcular un job asíncrono de
+# insights antes de darse por vencido, y cada cuánto se pregunta por su
+# estado mientras tanto (ver _run_insights_job).
+_INSIGHTS_JOB_MAX_WAIT = float(os.getenv("META_INSIGHTS_JOB_MAX_WAIT", "180"))
+_INSIGHTS_JOB_POLL_INTERVAL = 2.0
 
 
 class MetaApiError(Exception):
     """Error al hablar con Meta (token inválido, sin acceso, etc.)."""
 
 
-async def _request(client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict:
+async def _request(client: httpx.AsyncClient, url: str, params: dict | None = None,
+                   method: str = "GET") -> dict:
     """
     Petición cruda a `url`, respetando el límite global de concurrencia. Si
     Meta responde con un código de rate limit, o si la petición se queda sin
@@ -132,7 +132,10 @@ async def _request(client: httpx.AsyncClient, url: str, params: dict | None = No
     for attempt in range(_MAX_RETRIES + 1):
         try:
             async with _semaphore:
-                resp = await client.get(url, params=params)
+                if method == "POST":
+                    resp = await client.post(url, params=params)
+                else:
+                    resp = await client.get(url, params=params)
         except httpx.TimeoutException:
             if attempt < _MAX_RETRIES:
                 delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
@@ -158,6 +161,11 @@ async def _request(client: httpx.AsyncClient, url: str, params: dict | None = No
 async def _get(client: httpx.AsyncClient, path: str, token: str, params: dict) -> dict:
     """GET a un endpoint de la Graph API con el token. Ver _request()."""
     return await _request(client, f"{BASE_URL}/{path}", {**params, "access_token": token})
+
+
+async def _post(client: httpx.AsyncClient, path: str, token: str, params: dict) -> dict:
+    """POST a un endpoint de la Graph API con el token. Ver _request()."""
+    return await _request(client, f"{BASE_URL}/{path}", {**params, "access_token": token}, method="POST")
 
 
 async def _get_all(client: httpx.AsyncClient, path: str, token: str, params: dict) -> list[dict]:
@@ -262,26 +270,65 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
     raise last_error
 
 
+async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token: str,
+                            level: str, fields: list[str], time_range: str) -> list[dict]:
+    """
+    Pide los insights de TODA la cuenta (para un `level` dado) por la vía
+    ASÍNCRONA de Meta: se crea un job en segundo plano (POST), se espera a
+    que termine de calcularse (polling), y se leen los resultados ya listos.
+
+    Por qué: la vía síncrona (GET .../insights?level=...) para una cuenta
+    completa choca con el límite de "Please reduce the amount of data
+    you're asking for" en cuentas con volumen real. Acotar esa misma
+    consulta por campaña sí evita ese límite, pero para cuentas con MUCHAS
+    campañas dispara el otro límite ("User request limit reached") por la
+    cantidad de llamadas. El job asíncrono es la vía que Meta documenta
+    específicamente para exportar volúmenes grandes: no tiene la restricción
+    síncrona de tamaño de respuesta, y es UNA sola consulta por cuenta sin
+    importar cuántas campañas/anuncios tenga.
+    """
+    creation = await _post(client, f"{ad_account_id}/insights", token, {
+        "level": level,
+        "fields": ",".join(fields),
+        "time_range": time_range,
+    })
+    report_run_id = creation.get("report_run_id")
+    if not report_run_id:
+        raise MetaApiError("Meta no devolvió un identificador de job para los insights.")
+
+    waited = 0.0
+    while True:
+        status_data = await _get(client, str(report_run_id), token,
+                                 {"fields": "async_status,async_percent_completion"})
+        status = status_data.get("async_status")
+        if status == "Job Completed":
+            break
+        if status in ("Job Failed", "Job Skipped"):
+            raise MetaApiError(f"El cálculo de insights en Meta falló ({status}).")
+        if waited >= _INSIGHTS_JOB_MAX_WAIT:
+            raise MetaApiError(
+                "Meta tardó demasiado en calcular los insights de la cuenta. "
+                "Intenta de nuevo en unos minutos."
+            )
+        await asyncio.sleep(_INSIGHTS_JOB_POLL_INTERVAL)
+        waited += _INSIGHTS_JOB_POLL_INTERVAL
+
+    return await _get_all(client, f"{report_run_id}/insights", token, {"limit": _PAGE_SIZE})
+
+
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str) -> dict:
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
 
-    Los insights se piden en DOS niveles de granularidad distintos, y no por
-    casualidad:
-    - Campaña: en bloque para TODA la cuenta (1-2 llamadas) — una fila por
-      campaña, siempre pocas filas, nunca pesado.
-    - Anuncio: UNA llamada POR CAMPAÑA (no una por anuncio, pero tampoco una
-      sola para toda la cuenta). Pedir los anuncios de TODA la cuenta en una
-      sola consulta (como se hacía antes) es la consulta de mayor alcance
-      posible —todas las campañas, mes completo, a la vez— y Meta la
-      rechaza con "Please reduce the amount of data you're asking for" en
-      cuentas con volumen real, sin importar cuánto se baje el `limit` de
-      paginación (el límite ahí no acota cuánto tiene que agregar Meta
-      internamente, solo cuántas filas devuelve por página). Acotar por
-      campaña es el punto medio: sigue habiendo muchas menos llamadas que
-      una por anuncio (lo que disparaba el rate limit), pero cada consulta
-      queda del tamaño de una campaña, no de la cuenta completa.
+    Los insights (campaña y anuncio) se piden vía job asíncrono de Meta —ver
+    _run_insights_job—, uno para toda la cuenta por nivel, sin importar
+    cuántas campañas o anuncios tenga. El listado de anuncios (nombre +
+    creativo, sin insights) SÍ se pide de forma síncrona en bloque porque es
+    liviano (no agrega datos sobre un rango de fechas, es solo un listado) y
+    NO se filtra por effective_status: Meta tiene más estados posibles que
+    "ACTIVE"/"PAUSED" (ej. ADSET_PAUSED, CAMPAIGN_PAUSED) y filtrar por esos
+    dos nada más escondía anuncios legítimos que sí deberían aparecer.
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -291,49 +338,26 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
 
         api_fields = _fields_for_campaigns(campaigns)
 
-        async def _ad_insights_for_campaign(campaign: dict) -> list[dict]:
-            return await _labeled(
-                f"Insights de anuncios de la campaña '{campaign.get('name', campaign['id'])}'",
-                _get_all(client, f"{campaign['id']}/insights", token, {
-                    "level": "ad",
-                    "fields": "ad_id," + ",".join(api_fields),
-                    "time_range": time_range,
-                    "limit": _INSIGHTS_PAGE_SIZE,
-                }),
-            )
-
-        async def _ads_for_campaign(campaign: dict) -> list[dict]:
-            return await _labeled(
-                f"Listado de anuncios de la campaña '{campaign.get('name', campaign['id'])}'",
-                _get_all(client, f"{campaign['id']}/ads", token, {
-                    # object_story_spec NO se pide: es el campo más pesado del
-                    # creativo y no se usa en ningún lado (solo se lee
-                    # thumbnail_url/image_url). Pedirlo de más, sin acotar por
-                    # campaña, era otro contribuyente a "reduce the amount of
-                    # data you're asking for" en la cuenta completa.
-                    "fields": "id,name,creative{thumbnail_url,image_url}",
-                    "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
-                                              "value": ["ACTIVE", "PAUSED"]}]),
-                    "limit": _PAGE_SIZE,
-                }),
-            )
-
-        campaign_insights, ad_insights_by_campaign, ads_by_campaign_list = await asyncio.gather(
-            _labeled("Insights de campañas", _get_all(client, f"{ad_account_id}/insights", token, {
-                "level": "campaign",
-                "fields": "campaign_id," + ",".join(api_fields),
-                "time_range": time_range,
-                "limit": _INSIGHTS_PAGE_SIZE,
+        campaign_insights, ad_insights, ads = await asyncio.gather(
+            _labeled("Insights de campañas", _run_insights_job(
+                client, ad_account_id, token, "campaign", ["campaign_id"] + api_fields, time_range,
+            )),
+            _labeled("Insights de anuncios", _run_insights_job(
+                client, ad_account_id, token, "ad", ["ad_id"] + api_fields, time_range,
+            )),
+            _labeled("Listado de anuncios", _get_all(client, f"{ad_account_id}/ads", token, {
+                "fields": "id,name,campaign_id,creative{thumbnail_url,image_url}",
+                "limit": _PAGE_SIZE,
             })),
-            asyncio.gather(*(_ad_insights_for_campaign(c) for c in campaigns)),
-            asyncio.gather(*(_ads_for_campaign(c) for c in campaigns)),
         )
 
         insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)
                                 for i in campaign_insights if i.get("campaign_id")}
         insights_by_ad = {i["ad_id"]: _with_derived_metrics(i)
-                          for group in ad_insights_by_campaign for i in group if i.get("ad_id")}
-        ads_by_campaign = {c["id"]: ads for c, ads in zip(campaigns, ads_by_campaign_list)}
+                          for i in ad_insights if i.get("ad_id")}
+        ads_by_campaign: dict[str, list[dict]] = {}
+        for ad in ads:
+            ads_by_campaign.setdefault(ad.get("campaign_id"), []).append(ad)
 
     campaign_data = []
     for c in campaigns:
