@@ -24,7 +24,12 @@ import httpx
 
 API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
-TIMEOUT = httpx.Timeout(30.0)
+# Una consulta de insights en bloque (level=ad/campaign sobre un rango
+# mensual, con varios anuncios) puede tardar bastante en calcularse del lado
+# de Meta — 30s se quedaba corto y causaba httpx.ReadTimeout en cuentas
+# grandes. El timeout de conexión se queda corto (10s: si Meta no ni siquiera
+# contesta en eso, algo más grave pasa), pero el de lectura se da más margen.
+TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 # Cuántas llamadas a la Graph API dejamos en vuelo al mismo tiempo EN TODO EL
 # PROCESO (no por request ni por cuenta): un solo semáforo a nivel de módulo,
@@ -101,15 +106,29 @@ class MetaApiError(Exception):
 async def _request(client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict:
     """
     Petición cruda a `url`, respetando el límite global de concurrencia. Si
-    Meta responde con un código de rate limit, reintenta con backoff
+    Meta responde con un código de rate limit, o si la petición se queda sin
+    respuesta a tiempo (httpx.TimeoutException — pasa con insights pesados,
+    ej. un rango mensual con muchos anuncios), reintenta con backoff
     exponencial (+ jitter) antes de darse por vencido.
     `params=None` cuando `url` ya trae todo lo necesario (ej. el link "next"
     de una página siguiente, que Meta devuelve ya armado con el token).
-    Devuelve el JSON o lanza MetaApiError.
+    Devuelve el JSON o lanza MetaApiError (nunca deja escapar la excepción de
+    httpx sin convertir, para que el llamador la pueda distinguir de un error
+    inesperado como uno de generación de PDF).
     """
     for attempt in range(_MAX_RETRIES + 1):
-        async with _semaphore:
-            resp = await client.get(url, params=params)
+        try:
+            async with _semaphore:
+                resp = await client.get(url, params=params)
+        except httpx.TimeoutException:
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
+                await asyncio.sleep(delay)
+                continue
+            raise MetaApiError(
+                "Meta tardó demasiado en responder (timeout). Intenta de nuevo en unos minutos."
+            )
+
         data = resp.json()
         if resp.status_code == 200:
             return data

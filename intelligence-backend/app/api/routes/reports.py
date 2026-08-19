@@ -83,10 +83,14 @@ async def _run_report_job(
     except meta_api.MetaApiError as e:
         _JOBS[job_id].update(status="error", error=f"Meta: {e}")
     except Exception as e:
+        # Cualquier error que NO sea de validación ni de Meta (ej. algo real
+        # de Playwright/Chromium, o un bug en el armado del PDF). El detalle
+        # completo va a los logs del servidor; al usuario solo un mensaje
+        # genérico, para no asumir una causa que puede no ser la real.
         print(f"[reports] Error generando el PDF (job {job_id}): {type(e).__name__}: {e}")
         _JOBS[job_id].update(status="error", error=(
-            "No se pudo generar el PDF. Verifica que Playwright y Chromium estén "
-            "instalados (pip install playwright && playwright install chromium)."
+            "Ocurrió un error inesperado generando el reporte. Intenta de nuevo; "
+            "si persiste, revisa los logs del servidor."
         ))
 
 
