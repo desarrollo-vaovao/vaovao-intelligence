@@ -369,7 +369,16 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
 
     campaign_data = []
     for c in campaigns:
-        insights = insights_by_campaign.get(c["id"], {})
+        insights = insights_by_campaign.get(c["id"])
+        if insights is None:
+            # Sigue ACTIVA/PAUSADA en Meta pero no tuvo ni un dólar de gasto
+            # ni impresión en el período pedido (Meta solo devuelve fila de
+            # insights para entidades con actividad real) — no tiene sentido
+            # meterla en un reporte de ESE período. Sin este filtro, cuentas
+            # con historial largo (años de campañas viejas que nunca se
+            # archivaron) inflan el reporte a decenas de páginas de puras
+            # rayitas ("—"), como pasaba con OLR.
+            continue
         campaign_ads = []
         for ad in ads_by_campaign.get(c["id"], []):
             creative = ad.get("creative") or {}
