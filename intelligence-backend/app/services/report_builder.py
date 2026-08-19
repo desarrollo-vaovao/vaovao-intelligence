@@ -59,7 +59,6 @@ async def build_report_data(client: Client, tokens: list[str], date_from: date, 
         per_station = (budget / len(accounts)) if budget else None
         stations = [
             {
-                "station_id": acc.label,
                 "station_label": acc.label,
                 "campaigns": data["campaigns"],
                 "total_spend": data["total_spend"],

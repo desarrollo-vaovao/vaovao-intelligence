@@ -215,7 +215,6 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
 def render_station_page(station: dict, client_name: str, period: str,
                         station_index: int, total_stations: int,
                         currency_symbol: str = "$") -> str:
-    station_id = station.get("station_id")
     station_label = station.get("station_label")
     campaigns = station.get("campaigns", [])
     total_spend = station.get("total_spend", 0)
@@ -223,7 +222,7 @@ def render_station_page(station: dict, client_name: str, period: str,
 
     pct = min(round((total_spend / budget) * 100), 100) if budget else None
 
-    pleca_label = f"{station_id} — {station_label}" if station_label else "Reporte de campañas — Meta Ads"
+    pleca_label = station_label if station_label else "Reporte de campañas — Meta Ads"
     pleca_sub = (f'Estación {station_index} de {total_stations}'
                  if total_stations > 1 else "Quincenal")
 
@@ -321,7 +320,7 @@ def render_station_page(station: dict, client_name: str, period: str,
 
       <div style="background:#111;color:#666;padding:8px 28px;display:flex;justify-content:space-between;font-size:10px;">
         <span>VaoVao — Reporte generado automáticamente</span>
-        <span>{(station_id + " — ") if station_label else ""}{period} &nbsp;·&nbsp; hello@vaovao.co</span>
+        <span>{(station_label + " — ") if station_label else ""}{period} &nbsp;·&nbsp; hello@vaovao.co</span>
       </div>
     </div>
     """
@@ -341,7 +340,7 @@ def generate_report_html(report_data: dict) -> str:
         )
     else:
         pages = render_station_page(
-            {"station_id": None, "station_label": None,
+            {"station_label": None,
              "campaigns": report_data.get("campaigns", []),
              "total_spend": report_data.get("total_spend", 0),
              "budget": report_data.get("budget")},

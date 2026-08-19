@@ -57,26 +57,32 @@ METRICS_BY_OBJECTIVE = {
     "DEFAULT":         ["impressions", "reach", "clicks", "ctr", "cpc", "spend"],
 }
 
+# Unión de TODAS las métricas posibles (de todos los objetivos): se piden de
+# una vez para toda la cuenta, y luego cada campaña/anuncio solo lee las
+# suyas según su objetivo. Pedir de más no cuesta llamadas extra a Meta —lo
+# caro es el NÚMERO de llamadas, no el número de campos por llamada.
+_ALL_METRICS = sorted({m for metrics in METRICS_BY_OBJECTIVE.values() for m in metrics})
+
+# Cuántos resultados pedimos por página al paginar (campañas, insights, anuncios).
+_PAGE_SIZE = 200
+
 
 class MetaApiError(Exception):
     """Error al hablar con Meta (token inválido, sin acceso, etc.)."""
 
 
-def _metrics_for(objective: str) -> list[str]:
-    return METRICS_BY_OBJECTIVE.get(objective, METRICS_BY_OBJECTIVE["DEFAULT"])
-
-
-async def _get(client: httpx.AsyncClient, path: str, token: str, params: dict) -> dict:
+async def _request(client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict:
     """
-    GET a la Graph API con el token, respetando el límite global de
-    concurrencia. Si Meta responde con un código de rate limit, reintenta con
-    backoff exponencial (+ jitter) antes de darse por vencido.
+    Petición cruda a `url`, respetando el límite global de concurrencia. Si
+    Meta responde con un código de rate limit, reintenta con backoff
+    exponencial (+ jitter) antes de darse por vencido.
+    `params=None` cuando `url` ya trae todo lo necesario (ej. el link "next"
+    de una página siguiente, que Meta devuelve ya armado con el token).
     Devuelve el JSON o lanza MetaApiError.
     """
-    params = {**params, "access_token": token}
     for attempt in range(_MAX_RETRIES + 1):
         async with _semaphore:
-            resp = await client.get(f"{BASE_URL}/{path}", params=params)
+            resp = await client.get(url, params=params)
         data = resp.json()
         if resp.status_code == 200:
             return data
@@ -88,6 +94,29 @@ async def _get(client: httpx.AsyncClient, path: str, token: str, params: dict) -
             await asyncio.sleep(delay)
             continue
         raise MetaApiError(error.get("message", "Error desconocido de Meta"))
+
+
+async def _get(client: httpx.AsyncClient, path: str, token: str, params: dict) -> dict:
+    """GET a un endpoint de la Graph API con el token. Ver _request()."""
+    return await _request(client, f"{BASE_URL}/{path}", {**params, "access_token": token})
+
+
+async def _get_all(client: httpx.AsyncClient, path: str, token: str, params: dict) -> list[dict]:
+    """
+    Como _get, pero sigue la paginación de Meta (paging.next) hasta juntar
+    TODOS los resultados en una sola lista. Se usa para traer, por ejemplo,
+    los insights de TODAS las campañas o TODOS los anuncios de una cuenta en
+    unas pocas llamadas en vez de una por campaña/anuncio — lo que evita
+    disparar el rate limit de Meta en cuentas con muchas campañas/anuncios.
+    """
+    data = await _get(client, path, token, params)
+    items = list(data.get("data", []))
+    next_url = (data.get("paging") or {}).get("next")
+    while next_url:
+        data = await _request(client, next_url)
+        items.extend(data.get("data", []))
+        next_url = (data.get("paging") or {}).get("next")
+    return items
 
 
 async def check_account_access(token: str, ad_account_id: str) -> tuple[bool, str]:
@@ -123,82 +152,22 @@ async def check_account_access_with_fallback(tokens: list[str], ad_account_id: s
 
 async def get_campaigns(client: httpx.AsyncClient, token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
-    data = await _get(client, f"{ad_account_id}/campaigns", token, {
+    return await _get_all(client, f"{ad_account_id}/campaigns", token, {
         "fields": "id,name,objective,status,daily_budget,lifetime_budget",
         "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
                                   "value": ["ACTIVE", "PAUSED"]}]),
-        "limit": 50,
+        "limit": _PAGE_SIZE,
     })
-    return data.get("data", [])
 
 
-async def get_campaign_insights(client: httpx.AsyncClient, token: str,
-                                campaign_id: str, objective: str,
-                                date_from: str, date_to: str) -> dict | None:
-    """Números de rendimiento de UNA campaña en el rango de fechas."""
-    data = await _get(client, f"{campaign_id}/insights", token, {
-        "fields": ",".join(_metrics_for(objective)),
-        "time_range": json.dumps({"since": date_from, "until": date_to}),
-        "level": "campaign",
-    })
-    rows = data.get("data", [])
-    return rows[0] if rows else None
-
-
-async def get_campaign_ads(client: httpx.AsyncClient, token: str,
-                           campaign_id: str, objective: str,
-                           date_from: str, date_to: str) -> list[dict]:
-    """Anuncios de una campaña con su rendimiento e imagen, ordenados por desempeño."""
-    metrics = _metrics_for(objective)
-
-    adsets = (await _get(client, f"{campaign_id}/adsets", token,
-                         {"fields": "id,name", "limit": 20})).get("data", [])
-
-    async def _ads_for_adset(adset: dict) -> list[dict]:
-        ads = (await _get(client, f"{adset['id']}/ads", token, {
-            "fields": "id,name,creative{thumbnail_url,image_url,object_story_spec}",
-            "limit": 20,
-        })).get("data", [])
-
-        async def _with_insights(ad: dict) -> dict:
-            insights_rows = (await _get(client, f"{ad['id']}/insights", token, {
-                "fields": ",".join(metrics),
-                "time_range": json.dumps({"since": date_from, "until": date_to}),
-            })).get("data", [])
-            insights = insights_rows[0] if insights_rows else {}
-
-            creative = ad.get("creative") or {}
-            image_url = creative.get("thumbnail_url") or creative.get("image_url")
-
-            return {
-                "id": ad["id"],
-                "name": ad.get("name"),
-                "image_url": image_url,
-                "insights": insights,
-            }
-
-        if not ads:
-            return []
-        return list(await asyncio.gather(*(_with_insights(ad) for ad in ads)))
-
-    if not adsets:
-        all_ads: list[dict] = []
-    else:
-        groups = await asyncio.gather(*(_ads_for_adset(adset) for adset in adsets))
-        all_ads = [ad for group in groups for ad in group]
-
-    def _rank(ad: dict) -> float:
-        i = ad["insights"]
-        for key in ("clicks", "messaging_conversation_started_7d", "post_engagement", "impressions"):
-            if i.get(key) is not None:
-                try:
-                    return float(i[key])
-                except (TypeError, ValueError):
-                    return 0.0
-        return 0.0
-
-    all_ads.sort(key=_rank, reverse=True)
-    return all_ads
+def _rank_by_insights(insights: dict) -> float:
+    for key in ("clicks", "messaging_conversation_started_7d", "post_engagement", "impressions"):
+        if insights.get(key) is not None:
+            try:
+                return float(insights[key])
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
 
 
 async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
@@ -224,29 +193,72 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
-    Todas las campañas (y, dentro de cada una, insights + anuncios) se piden en paralelo.
+
+    A diferencia de antes, los insights de TODAS las campañas y de TODOS los
+    anuncios de la cuenta se piden en bloque (2-3 llamadas con paginación,
+    vía _get_all), no una llamada por campaña + una por anuncio. Con cuentas
+    de muchas campañas/anuncios, pedir uno por uno dispara el rate limit de
+    Meta ("User request limit reached") aunque se limite la concurrencia:
+    lo que cuenta para el límite es el NÚMERO TOTAL de llamadas, no cuántas
+    van a la vez.
     """
+    time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         campaigns = await get_campaigns(client, token, ad_account_id)
+        if not campaigns:
+            return {"campaigns": [], "total_spend": 0.0}
 
-        async def _for_campaign(campaign: dict) -> dict:
-            objective = campaign.get("objective", "DEFAULT")
-            insights, ads = await asyncio.gather(
-                get_campaign_insights(client, token, campaign["id"], objective, date_from, date_to),
-                get_campaign_ads(client, token, campaign["id"], objective, date_from, date_to),
-            )
-            spend = float((insights or {}).get("spend", 0) or 0)
-            return {
-                "id": campaign["id"],
-                "name": campaign.get("name"),
-                "objective": objective,
-                "status": campaign.get("status"),
-                "insights": insights or {},
-                "ads": ads,
-                "spend": spend,
-            }
+        campaign_insights, ad_insights, ads = await asyncio.gather(
+            _get_all(client, f"{ad_account_id}/insights", token, {
+                "level": "campaign",
+                "fields": "campaign_id," + ",".join(_ALL_METRICS),
+                "time_range": time_range,
+                "limit": _PAGE_SIZE,
+            }),
+            _get_all(client, f"{ad_account_id}/insights", token, {
+                "level": "ad",
+                "fields": "ad_id," + ",".join(_ALL_METRICS),
+                "time_range": time_range,
+                "limit": _PAGE_SIZE,
+            }),
+            _get_all(client, f"{ad_account_id}/ads", token, {
+                "fields": "id,name,campaign_id,creative{thumbnail_url,image_url,object_story_spec}",
+                "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
+                                          "value": ["ACTIVE", "PAUSED"]}]),
+                "limit": _PAGE_SIZE,
+            }),
+        )
 
-        campaign_data = list(await asyncio.gather(*(_for_campaign(c) for c in campaigns))) if campaigns else []
+        insights_by_campaign = {i["campaign_id"]: i for i in campaign_insights if i.get("campaign_id")}
+        insights_by_ad = {i["ad_id"]: i for i in ad_insights if i.get("ad_id")}
+        ads_by_campaign: dict[str, list[dict]] = {}
+        for ad in ads:
+            ads_by_campaign.setdefault(ad.get("campaign_id"), []).append(ad)
+
+    campaign_data = []
+    for c in campaigns:
+        insights = insights_by_campaign.get(c["id"], {})
+        campaign_ads = []
+        for ad in ads_by_campaign.get(c["id"], []):
+            creative = ad.get("creative") or {}
+            campaign_ads.append({
+                "id": ad["id"],
+                "name": ad.get("name"),
+                "image_url": creative.get("thumbnail_url") or creative.get("image_url"),
+                "insights": insights_by_ad.get(ad["id"], {}),
+            })
+        campaign_ads.sort(key=lambda a: _rank_by_insights(a["insights"]), reverse=True)
+
+        spend = float(insights.get("spend", 0) or 0)
+        campaign_data.append({
+            "id": c["id"],
+            "name": c.get("name"),
+            "objective": c.get("objective", "DEFAULT"),
+            "status": c.get("status"),
+            "insights": insights,
+            "ads": campaign_ads,
+            "spend": spend,
+        })
 
     total_spend = sum(c["spend"] for c in campaign_data)
     return {"campaigns": campaign_data, "total_spend": total_spend}
