@@ -253,13 +253,21 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
 
-    A diferencia de antes, los insights de TODAS las campañas y de TODOS los
-    anuncios de la cuenta se piden en bloque (2-3 llamadas con paginación,
-    vía _get_all), no una llamada por campaña + una por anuncio. Con cuentas
-    de muchas campañas/anuncios, pedir uno por uno dispara el rate limit de
-    Meta ("User request limit reached") aunque se limite la concurrencia:
-    lo que cuenta para el límite es el NÚMERO TOTAL de llamadas, no cuántas
-    van a la vez.
+    Los insights se piden en DOS niveles de granularidad distintos, y no por
+    casualidad:
+    - Campaña: en bloque para TODA la cuenta (1-2 llamadas) — una fila por
+      campaña, siempre pocas filas, nunca pesado.
+    - Anuncio: UNA llamada POR CAMPAÑA (no una por anuncio, pero tampoco una
+      sola para toda la cuenta). Pedir los anuncios de TODA la cuenta en una
+      sola consulta (como se hacía antes) es la consulta de mayor alcance
+      posible —todas las campañas, mes completo, a la vez— y Meta la
+      rechaza con "Please reduce the amount of data you're asking for" en
+      cuentas con volumen real, sin importar cuánto se baje el `limit` de
+      paginación (el límite ahí no acota cuánto tiene que agregar Meta
+      internamente, solo cuántas filas devuelve por página). Acotar por
+      campaña es el punto medio: sigue habiendo muchas menos llamadas que
+      una por anuncio (lo que disparaba el rate limit), pero cada consulta
+      queda del tamaño de una campaña, no de la cuenta completa.
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -268,19 +276,23 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             return {"campaigns": [], "total_spend": 0.0}
 
         api_fields = _fields_for_campaigns(campaigns)
-        campaign_insights, ad_insights, ads = await asyncio.gather(
+
+        async def _ad_insights_for_campaign(campaign_id: str) -> list[dict]:
+            return await _get_all(client, f"{campaign_id}/insights", token, {
+                "level": "ad",
+                "fields": "ad_id," + ",".join(api_fields),
+                "time_range": time_range,
+                "limit": _INSIGHTS_PAGE_SIZE,
+            })
+
+        campaign_insights, ad_insights_by_campaign, ads = await asyncio.gather(
             _get_all(client, f"{ad_account_id}/insights", token, {
                 "level": "campaign",
                 "fields": "campaign_id," + ",".join(api_fields),
                 "time_range": time_range,
                 "limit": _INSIGHTS_PAGE_SIZE,
             }),
-            _get_all(client, f"{ad_account_id}/insights", token, {
-                "level": "ad",
-                "fields": "ad_id," + ",".join(api_fields),
-                "time_range": time_range,
-                "limit": _INSIGHTS_PAGE_SIZE,
-            }),
+            asyncio.gather(*(_ad_insights_for_campaign(c["id"]) for c in campaigns)),
             _get_all(client, f"{ad_account_id}/ads", token, {
                 "fields": "id,name,campaign_id,creative{thumbnail_url,image_url,object_story_spec}",
                 "filtering": json.dumps([{"field": "effective_status", "operator": "IN",
@@ -292,7 +304,7 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
         insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)
                                 for i in campaign_insights if i.get("campaign_id")}
         insights_by_ad = {i["ad_id"]: _with_derived_metrics(i)
-                          for i in ad_insights if i.get("ad_id")}
+                          for group in ad_insights_by_campaign for i in group if i.get("ad_id")}
         ads_by_campaign: dict[str, list[dict]] = {}
         for ad in ads:
             ads_by_campaign.setdefault(ad.get("campaign_id"), []).append(ad)
