@@ -211,20 +211,18 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
     """
 
 
-# ── Render de una página (estación o reporte único) ───────────
-def render_station_page(station: dict, client_name: str, period: str,
-                        station_index: int, total_stations: int,
-                        currency_symbol: str = "$") -> str:
-    station_label = station.get("station_label")
-    campaigns = station.get("campaigns", [])
-    total_spend = station.get("total_spend", 0)
-    budget = station.get("budget")
+# ── Render de la página del reporte ───────────────────────────
+def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
+    client_name = report_data.get("client_name", "")
+    period = report_data.get("period", "")
+    campaigns = report_data.get("campaigns", [])
+    total_spend = report_data.get("total_spend", 0)
+    budget = report_data.get("budget")
 
     pct = min(round((total_spend / budget) * 100), 100) if budget else None
 
-    pleca_label = station_label if station_label else "Reporte de campañas — Meta Ads"
-    pleca_sub = (f'Estación {station_index} de {total_stations}'
-                 if total_stations > 1 else "Quincenal")
+    pleca_label = "Reporte de campañas — Meta Ads"
+    pleca_sub = "Quincenal"
 
     budget_block = ""
     if budget:
@@ -320,32 +318,15 @@ def render_station_page(station: dict, client_name: str, period: str,
 
       <div style="background:#111;color:#666;padding:8px 28px;display:flex;justify-content:space-between;font-size:10px;">
         <span>VaoVao — Reporte generado automáticamente</span>
-        <span>{(station_label + " — ") if station_label else ""}{period} &nbsp;·&nbsp; hello@vaovao.co</span>
+        <span>{period} &nbsp;·&nbsp; hello@vaovao.co</span>
       </div>
     </div>
     """
 
 
 def generate_report_html(report_data: dict) -> str:
-    """Arma el HTML completo del reporte (una página por estación, o una sola)."""
-    client_name = report_data.get("client_name", "")
-    period = report_data.get("period", "")
-    currency_symbol = report_data.get("currency_symbol", "$")
-
-    if report_data.get("type") == "multi-station":
-        stations = report_data.get("stations", [])
-        pages = "".join(
-            render_station_page(st, client_name, period, i + 1, len(stations), currency_symbol)
-            for i, st in enumerate(stations)
-        )
-    else:
-        pages = render_station_page(
-            {"station_label": None,
-             "campaigns": report_data.get("campaigns", []),
-             "total_spend": report_data.get("total_spend", 0),
-             "budget": report_data.get("budget")},
-            client_name, period, 1, 1, currency_symbol,
-        )
+    """Arma el HTML completo del reporte: una página, un activo comercial."""
+    pages = render_report_page(report_data, report_data.get("currency_symbol", "$"))
 
     return f"""<!DOCTYPE html>
 <html lang="es">

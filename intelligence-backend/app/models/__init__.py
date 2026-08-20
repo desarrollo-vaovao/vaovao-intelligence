@@ -30,6 +30,10 @@ class UserRole(str, enum.Enum):
 
 
 class ClientType(str, enum.Enum):
+    """
+    Sin uso desde que el reporte se genera por activo comercial: la columna
+    se conserva solo para no forzar una migración de base.
+    """
     single = "single"               # un solo ad account
     multi_station = "multi_station" # varias estaciones/países
 

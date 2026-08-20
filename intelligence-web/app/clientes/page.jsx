@@ -14,6 +14,7 @@ export default function ClientesPage() {
   const [editAccountTarget, setEditAccountTarget] = useState(null); // { client, account } a editar
   const [access, setAccess] = useState({}); // resultado de "Probar acceso" por cuenta
   const [testing, setTesting] = useState(null); // id de cuenta que se está probando
+  const [refreshing, setRefreshing] = useState(null); // id de cuenta refrescando nombre
 
   async function load() {
     try { setClients(await api.listClients()); }
@@ -32,12 +33,21 @@ export default function ClientesPage() {
     } finally { setTesting(null); }
   }
 
+  async function refrescarNombre(clientId, accountId) {
+    setErr(""); setRefreshing(accountId);
+    try {
+      await api.refreshAdAccountName(clientId, accountId);
+      await load();
+    } catch (e) { setErr(e.message); }
+    finally { setRefreshing(null); }
+  }
+
   return (
     <Shell>
       <div className="page-head">
         <div>
           <h1>Clientes</h1>
-          <p>Marcas que gestionas y sus cuentas publicitarias de Meta.</p>
+          <p>Portafolios que gestionas y sus activos comerciales de Meta.</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowClient(true)}>+ Nuevo cliente</button>
       </div>
@@ -57,11 +67,11 @@ export default function ClientesPage() {
             <div className="card" key={c.id} style={{ padding: 18 }}>
               <div className="row" style={{ marginBottom: c.ad_accounts.length ? 14 : 0 }}>
                 <h3 style={{ fontSize: 17 }}>{c.name}</h3>
-                <span className={`badge ${c.type === "multi_station" ? "badge-neutral" : "badge-neutral"}`}>
-                  {c.type === "multi_station" ? "Multi-estación" : "Único"}
+                <span className="badge badge-neutral">
+                  {c.ad_accounts.length} activo{c.ad_accounts.length === 1 ? "" : "s"}
                 </span>
                 <div className="spacer" />
-                <button className="icon-btn" title="Agregar cuenta" aria-label="Agregar cuenta" onClick={() => setAdFor(c)}>
+                <button className="icon-btn" title="Agregar activo" aria-label="Agregar activo" onClick={() => setAdFor(c)}>
                   <PlusIcon />
                 </button>
                 <button className="icon-btn" title="Editar cliente" aria-label="Editar cliente" onClick={() => setEditTarget(c)}>
@@ -74,14 +84,25 @@ export default function ClientesPage() {
               {c.ad_accounts.length > 0 && (
                 <table className="table">
                   <thead>
-                    <tr><th>Etiqueta</th><th>ID de cuenta</th><th>Destinatarios</th><th>Acceso Meta</th><th></th><th></th></tr>
+                    <tr><th>Activo comercial</th><th>ID de cuenta</th><th>Destinatarios</th><th>Acceso Meta</th><th></th><th></th></tr>
                   </thead>
                   <tbody>
                     {c.ad_accounts.map((a) => {
                       const res = access[a.id];
                       return (
                         <tr key={a.id}>
-                          <td>{a.label}</td>
+                          <td>
+                            {a.label}
+                            <button
+                              className="btn btn-ghost"
+                              style={{ padding: "3px 8px", fontSize: 11.5, marginLeft: 8 }}
+                              title="Volver a traer el nombre desde Meta"
+                              onClick={() => refrescarNombre(c.id, a.id)}
+                              disabled={refreshing === a.id}
+                            >
+                              {refreshing === a.id ? "…" : "Actualizar nombre"}
+                            </button>
+                          </td>
                           <td className="mono" style={{ fontSize: 13 }}>{a.meta_ad_account_id}</td>
                           <td style={{ color: "var(--muted)", fontSize: 13 }}>
                             {a.recipient_emails.length ? a.recipient_emails.join(", ") : "—"}
@@ -228,11 +249,10 @@ function PencilIcon() {
 
 function EditClientModal({ client, onClose, onDone }) {
   const [name, setName] = useState(client.name);
-  const [type, setType] = useState(client.type);
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   async function save() {
     setErr(""); setBusy(true);
-    try { await api.updateClient(client.id, { name, type }); onDone(); }
+    try { await api.updateClient(client.id, { name }); onDone(); }
     catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
@@ -243,13 +263,6 @@ function EditClientModal({ client, onClose, onDone }) {
         <div className="field">
           <label>Nombre</label>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Rent a Car GT" />
-        </div>
-        <div className="field">
-          <label>Tipo</label>
-          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="single">Único (una cuenta)</option>
-            <option value="multi_station">Multi-estación (varias cuentas/países)</option>
-          </select>
         </div>
         <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
@@ -265,11 +278,10 @@ function EditClientModal({ client, onClose, onDone }) {
 
 function ClientModal({ onClose, onDone }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState("single");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   async function save() {
     setErr(""); setBusy(true);
-    try { const client = await api.createClient({ name, type }); onDone(client); }
+    try { const client = await api.createClient({ name }); onDone(client); }
     catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
@@ -280,13 +292,6 @@ function ClientModal({ onClose, onDone }) {
         <div className="field">
           <label>Nombre</label>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Rent a Car GT" />
-        </div>
-        <div className="field">
-          <label>Tipo</label>
-          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="single">Único (una cuenta)</option>
-            <option value="multi_station">Multi-estación (varias cuentas/países)</option>
-          </select>
         </div>
         <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
@@ -322,10 +327,10 @@ function DeleteAdAccountModal({ client, account, onClose, onDone }) {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Eliminar cuenta</h2>
+        <h2>Eliminar activo</h2>
         {err && <div className="err">{err}</div>}
         <p style={{ color: "var(--muted)" }}>
-          ¿Eliminar la cuenta <strong style={{ color: "var(--text)" }}>{account.label}</strong>
+          ¿Eliminar el activo <strong style={{ color: "var(--text)" }}>{account.label}</strong>
           {" "}(<span className="mono">{account.meta_ad_account_id}</span>) de {client.name}?
           Esta acción no se puede deshacer.
         </p>
@@ -333,7 +338,7 @@ function DeleteAdAccountModal({ client, account, onClose, onDone }) {
           <div className="spacer" />
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="btn btn-danger" onClick={confirmDelete} disabled={busy}>
-            {busy ? "Eliminando…" : "Eliminar cuenta"}
+            {busy ? "Eliminando…" : "Eliminar activo"}
           </button>
         </div>
       </div>
@@ -342,26 +347,31 @@ function DeleteAdAccountModal({ client, account, onClose, onDone }) {
 }
 
 function EditAdAccountModal({ client, account, onClose, onDone }) {
-  const [label, setLabel] = useState(account.label);
   const [accId, setAccId] = useState(account.meta_ad_account_id);
   const [emails, setEmails] = useState(account.recipient_emails.join(", "));
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const idCambio = accId.trim() !== account.meta_ad_account_id;
   async function save() {
     setErr(""); setBusy(true);
     const recipient_emails = emails.split(",").map((s) => s.trim()).filter(Boolean);
+    // El ID solo se manda si cambió: mandarlo igual dispararía una llamada a
+    // Meta para reheredar un nombre que ya tenemos.
+    const body = { recipient_emails };
+    if (idCambio) body.meta_ad_account_id = accId;
     try {
-      await api.updateAdAccount(client.id, account.id, { label, meta_ad_account_id: accId, recipient_emails });
+      await api.updateAdAccount(client.id, account.id, body);
       onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Editar cuenta — {client.name}</h2>
+        <h2>Editar activo — {client.name}</h2>
         {err && <div className="err">{err}</div>}
         <div className="field">
-          <label>Etiqueta</label>
-          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ej. Guatemala, Principal" />
+          <label>Activo comercial</label>
+          <input className="input" value={account.label} disabled readOnly />
+          <NombreHeredadoNota />
         </div>
         <div className="field">
           <label>ID de cuenta publicitaria</label>
@@ -374,8 +384,8 @@ function EditAdAccountModal({ client, account, onClose, onDone }) {
         <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-primary" onClick={save} disabled={busy || !label.trim() || !accId.trim()}>
-            {busy ? "Guardando…" : "Guardar cambios"}
+          <button className="btn btn-primary" onClick={save} disabled={busy || !accId.trim()}>
+            {busy ? (idCambio ? "Verificando en Meta…" : "Guardando…") : "Guardar cambios"}
           </button>
         </div>
       </div>
@@ -384,7 +394,6 @@ function EditAdAccountModal({ client, account, onClose, onDone }) {
 }
 
 function AdAccountModal({ client, onClose, onDone }) {
-  const [label, setLabel] = useState("");
   const [accId, setAccId] = useState("");
   const [emails, setEmails] = useState("");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
@@ -392,22 +401,19 @@ function AdAccountModal({ client, onClose, onDone }) {
     setErr(""); setBusy(true);
     const recipient_emails = emails.split(",").map((s) => s.trim()).filter(Boolean);
     try {
-      await api.addAdAccount(client.id, { label, meta_ad_account_id: accId, recipient_emails });
+      await api.addAdAccount(client.id, { meta_ad_account_id: accId, recipient_emails });
       onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Cuenta de Meta — {client.name}</h2>
+        <h2>Activo comercial — {client.name}</h2>
         {err && <div className="err">{err}</div>}
-        <div className="field">
-          <label>Etiqueta</label>
-          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ej. Guatemala, Principal" />
-        </div>
         <div className="field">
           <label>ID de cuenta publicitaria</label>
           <input className="input mono" value={accId} onChange={(e) => setAccId(e.target.value)} placeholder="act_1234567890" />
+          <NombreHeredadoNota />
         </div>
         <div className="field">
           <label>Correos que reciben el reporte (separados por coma)</label>
@@ -416,11 +422,20 @@ function AdAccountModal({ client, onClose, onDone }) {
         <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-primary" onClick={save} disabled={busy || !label.trim() || !accId.trim()}>
-            {busy ? "Guardando…" : "Agregar cuenta"}
+          <button className="btn btn-primary" onClick={save} disabled={busy || !accId.trim()}>
+            {busy ? "Verificando en Meta…" : "Agregar activo"}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function NombreHeredadoNota() {
+  return (
+    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+      El nombre del activo se toma automáticamente de Meta. Si la cuenta no se
+      puede leer con las credenciales conectadas, no se guarda.
     </div>
   );
 }
