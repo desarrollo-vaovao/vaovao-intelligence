@@ -7,6 +7,37 @@ import { useClient } from "./clients";
 
 const NAV = [
   {
+    href: "/resumen", label: "Resumen",
+    icon: (
+      <>
+        <rect x="3.5" y="3.5" width="7" height="7" rx="1.6"></rect>
+        <rect x="13.5" y="3.5" width="7" height="7" rx="1.6"></rect>
+        <rect x="3.5" y="13.5" width="7" height="7" rx="1.6"></rect>
+        <rect x="13.5" y="13.5" width="7" height="7" rx="1.6"></rect>
+      </>
+    ),
+  },
+  {
+    href: "/analitica", label: "Analítica",
+    icon: (
+      <>
+        <path d="M4 20V10"></path>
+        <path d="M11 20V4"></path>
+        <path d="M18 20v-7"></path>
+      </>
+    ),
+  },
+  {
+    href: "/leads", label: "Leads",
+    icon: (
+      <>
+        <path d="M4 5h16"></path>
+        <path d="M7 12h10"></path>
+        <path d="M10.5 19h3"></path>
+      </>
+    ),
+  },
+  {
     href: "/clientes", label: "Clientes",
     icon: (
       <>
@@ -46,6 +77,15 @@ const NAV = [
         <circle cx="17" cy="17" r="2.6"></circle>
         <path d="M9.8 10.6 14.5 8.2"></path>
         <path d="M9.8 13.4l4.7 2.4"></path>
+      </>
+    ),
+  },
+  {
+    href: "/ajustes", label: "Ajustes", roles: ["owner", "admin"],
+    icon: (
+      <>
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M12 3v2.4M12 18.6V21M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M3 12h2.4M18.6 12H21M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"></path>
       </>
     ),
   },
