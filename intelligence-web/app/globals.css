@@ -277,3 +277,63 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
   .main { padding: 22px 18px; }
   .page-head { flex-direction: column; align-items: stretch; }
 }
+
+/* ── Sidebar: selector de cliente ── */
+.sidebar-switcher { position: relative; padding: 12px 8px 4px; }
+.switcher-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 9px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; text-align: left;
+}
+.switcher-btn:hover { background: var(--surface2); }
+.switcher-avatar {
+  width: 26px; height: 26px; border-radius: 50%; background: var(--accent);
+  color: var(--bg); display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex: none;
+}
+.switcher-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.switcher-caret { flex: none; transition: transform .15s; color: var(--muted2); }
+.switcher-caret.open { transform: rotate(180deg); }
+.switcher-menu {
+  position: absolute; left: 8px; right: 8px; top: 100%; z-index: 40; margin-top: 4px;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 12px;
+  padding: 6px; box-shadow: 0 18px 40px rgba(0,0,0,.5);
+}
+.switcher-item { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 8px; cursor: pointer; font-size: 12px; color: var(--text); }
+.switcher-item:hover { background: var(--surface); }
+.switcher-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted2); flex: none; }
+.switcher-item.active .dot { background: var(--accent); }
+.switcher-item small { margin-left: auto; color: var(--muted2); font-size: 9.5px; }
+.switcher-new { display: flex; align-items: center; gap: 8px; padding: 9px; border-radius: 8px; font-size: 12px; color: var(--accent); cursor: pointer; margin-top: 4px; }
+.switcher-new:hover { background: var(--surface); }
+
+/* ── Sidebar: estado de sincronización ── */
+.sync-card { margin: 10px 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface2); font-size: 11px; color: var(--muted); }
+.sync-card .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 7px; animation: vv-pulse 2.4s ease-in-out infinite; }
+@keyframes vv-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sync-card .dot { animation: none; } }
+
+/* ── Sidebar: colapsar ── */
+.collapse-btn { display: flex; align-items: center; justify-content: center; padding: 9px; margin: 6px 8px 0; border-radius: 9px; cursor: pointer; color: var(--muted); }
+.collapse-btn:hover { background: var(--surface2); color: var(--text); }
+.sidebar.collapsed .switcher-name,
+.sidebar.collapsed .nav-item span,
+.sidebar.collapsed .sync-card,
+.sidebar.collapsed .brand small,
+.sidebar.collapsed .switcher-caret { display: none; }
+.sidebar.collapsed .switcher-btn,
+.sidebar.collapsed .brand { justify-content: center; }
+
+/* ── Header superior ── */
+.header-bar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 14px;
+  padding: 14px 30px; background: rgba(10,10,9,.86); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.header-crumb { font-family: var(--font-unbounded), sans-serif; font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted2); }
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.currency-toggle { display: flex; height: 32px; border: 1px solid var(--border2); border-radius: 9px; overflow: hidden; }
+.currency-toggle button { border: none; background: transparent; color: var(--muted); font-family: 'Inter', sans-serif; font-size: 11.5px; padding: 0 12px; cursor: pointer; }
+.currency-toggle button.active { background: var(--surface2); color: var(--text); }
+.bell-btn { width: 32px; height: 32px; border: 1px solid var(--border2); border-radius: 9px; background: var(--surface); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
+.bell-btn:hover { border-color: var(--border3); }
