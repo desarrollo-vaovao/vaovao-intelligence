@@ -2,8 +2,11 @@
 import { useEffect, useState } from "react";
 import Shell from "@/lib/Shell";
 import { api } from "@/lib/api";
+import { useClient } from "@/lib/clients";
 
 export default function ClientesPage() {
+  const clientCtx = useClient() || {};
+  const { refresh: refreshActiveClient } = clientCtx;
   const [clients, setClients] = useState(null);
   const [err, setErr] = useState("");
   const [showClient, setShowClient] = useState(false);
@@ -18,6 +21,9 @@ export default function ClientesPage() {
   async function load() {
     try { setClients(await api.listClients()); }
     catch (e) { setErr(e.message); }
+    // Mantiene sincronizado el cliente activo del ClientProvider (usado en
+    // el switcher del Shell) con cualquier cambio hecho aquí.
+    if (refreshActiveClient) refreshActiveClient();
   }
   useEffect(() => { load(); }, []);
 

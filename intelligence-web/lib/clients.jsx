@@ -12,6 +12,18 @@ export function ClientProvider({ children }) {
   const [client, setClientState] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Restaura el cliente guardado en localStorage si sigue en la lista,
+  // o cae al primero de la lista (o null si está vacía). Compartido entre
+  // el fetch inicial y refresh(), para que ambos manejen igual el caso de
+  // un cliente activo que ya no existe (p.ej. fue eliminado).
+  const restoreOrFallback = useCallback((list) => {
+    const savedId = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+    const restored = list.find((c) => String(c.id) === savedId);
+    const next = restored || list[0] || null;
+    setClientState(next);
+    return next;
+  }, []);
+
   useEffect(() => {
     if (!user) {
       setClients(null);
@@ -25,16 +37,35 @@ export function ClientProvider({ children }) {
       .then((list) => {
         if (cancelled) return;
         setClients(list);
-        const savedId = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-        const restored = list.find((c) => String(c.id) === savedId);
-        setClientState(restored || list[0] || null);
+        restoreOrFallback(list);
       })
       .catch(() => {
         if (!cancelled) { setClients([]); setClientState(null); }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, restoreOrFallback]);
+
+  const refresh = useCallback(async () => {
+    if (!user) return null;
+    try {
+      const list = await api.listClients();
+      setClients(list);
+      const currentId = client ? String(client.id) : null;
+      if (currentId && list.some((c) => String(c.id) === currentId)) {
+        // El cliente activo sigue existiendo: mantenlo (con datos frescos).
+        const fresh = list.find((c) => String(c.id) === currentId);
+        setClientState(fresh);
+      } else {
+        // El cliente activo ya no existe (p.ej. fue eliminado): cae al
+        // primero de la lista, o null si quedó vacía.
+        restoreOrFallback(list);
+      }
+      return list;
+    } catch {
+      return null;
+    }
+  }, [user, client, restoreOrFallback]);
 
   const setClient = useCallback((next) => {
     setClientState(next);
@@ -45,7 +76,7 @@ export function ClientProvider({ children }) {
   }, []);
 
   return (
-    <ClientCtx.Provider value={{ client, clients, setClient, loading }}>
+    <ClientCtx.Provider value={{ client, clients, setClient, loading, refresh }}>
       {children}
     </ClientCtx.Provider>
   );

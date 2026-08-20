@@ -120,10 +120,11 @@ export default function Shell({ children }) {
   const initials = (user.full_name || "").split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
   return (
-    <div className="shell" style={{ gridTemplateColumns: collapsed ? "76px 1fr" : "230px 1fr", transition: "grid-template-columns .15s" }}>
+    <div className="shell" style={{ "--sidebar-w": collapsed ? "76px" : "230px" }}>
       <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
         <div className="brand">
-          VAO<span style={{ color: "var(--accent)" }}>VAO</span>
+          <span className="brand-short">V</span>
+          <span className="brand-full">VAO<span style={{ color: "var(--accent)" }}>VAO</span></span>
           <small>Intelligence</small>
         </div>
 
@@ -136,11 +137,11 @@ export default function Shell({ children }) {
           {switcherOpen && (
             <div className="switcher-menu">
               {(clients || []).map((c) => (
-                <div key={c.id} className={`switcher-item${client?.id === c.id ? " active" : ""}`} onClick={() => { setClient(c); setSwitcherOpen(false); }}>
+                <button type="button" key={c.id} className={`switcher-item${client?.id === c.id ? " active" : ""}`} onClick={() => { setClient(c); setSwitcherOpen(false); }}>
                   <span className="dot"></span>
                   <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</span>
                   <small>{c.ad_accounts?.length || 0}</small>
-                </div>
+                </button>
               ))}
               <Link href="/clientes" className="switcher-new" onClick={() => setSwitcherOpen(false)}>+ Nuevo cliente</Link>
             </div>
@@ -161,9 +162,9 @@ export default function Shell({ children }) {
           <div style={{ marginTop: 4, color: "var(--muted2)" }}>{totalAccounts} cuenta{totalAccounts === 1 ? "" : "s"} en total</div>
         </div>
 
-        <div className="collapse-btn" onClick={toggleCollapse} title={collapsed ? "Expandir" : "Colapsar"}>
+        <button type="button" className="collapse-btn" onClick={toggleCollapse} title={collapsed ? "Expandir" : "Colapsar"}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"></rect><path d="M10 4v16"></path></svg>
-        </div>
+        </button>
 
         <div className="sidebar-foot">
           <div className="sidebar-user">
@@ -197,7 +198,7 @@ export default function Shell({ children }) {
                     <span className="badge badge-role" style={{ marginTop: 8, display: "inline-flex" }}>{user.role}</span>
                   </div>
                   <div style={{ height: 1, background: "var(--border)", margin: "0 4px 6px" }}></div>
-                  <div className="switcher-item" onClick={logout} style={{ color: "var(--error)" }}>Cerrar sesión</div>
+                  <button type="button" className="switcher-item" onClick={logout} style={{ color: "var(--error)" }}>Cerrar sesión</button>
                 </div>
               )}
             </div>
