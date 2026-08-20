@@ -96,6 +96,7 @@ export const api = {
     return filename;
   },
   checkAccess: (account_id) => request("/reports/check-access", { method: "POST", body: { account_id } }),
+  reportSummary: (body) => request("/reports/summary", { method: "POST", body }),
 
   fbStatus: () => request("/auth/facebook/status"),
   fbLogin: () => request("/auth/facebook/login"),

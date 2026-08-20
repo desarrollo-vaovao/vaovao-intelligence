@@ -254,6 +254,44 @@ def download_report_job(job_id: str, current: User = Depends(get_current_user)):
     )
 
 
+@router.post("/summary")
+async def report_summary(
+    data: ReportRequest,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Igual que /generate pero sin PDF: devuelve el mismo dict que arma el
+    reporte (gasto, presupuesto, campañas) en JSON, para el panel de Resumen.
+    """
+    client = db.scalar(
+        select(Client)
+        .where(Client.id == data.client_id, Client.org_id == current.org_id)
+        .options(selectinload(Client.ad_accounts))
+    )
+    if not client:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cliente no encontrado")
+
+    if data.date_from > data.date_to:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "La fecha de inicio no puede ser posterior a la de fin.",
+        )
+
+    tokens, error = _resolve_tokens(current, db)
+    if not tokens:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
+
+    try:
+        return await report_builder.build_report_data(
+            client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    except meta_api.MetaApiError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Meta: {e}")
+
+
 @router.post("/check-access", response_model=CheckAccessResult)
 async def check_access(
     data: CheckAccessRequest,
