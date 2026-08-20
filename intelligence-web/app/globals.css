@@ -6,38 +6,43 @@
    ───────────────────────────────────────────── */
 
 :root {
-  --bg:        #0c0c0c;
-  --surface:   #141414;
-  --surface2:  #1a1a1a;
-  --border:    #242424;
-  --border2:   #2e2e2e;
-  --text:      #f0f0f0;
-  --muted:     #666;
-  --muted2:    #444;
+  --bg:        #0F0F0E;
+  --surface:   #161614;
+  --surface2:  #1C1C19;
+  --surface3:  #131311;
+  --border:    #262622;
+  --border2:   #2E2E29;
+  --border3:   #35352F;
+  --text:      #F5F5F2;
+  --muted:     #8A8A82;
+  --muted2:    #57574F;
 
-  --orange:    #FCB045;
+  --orange:    #FF4422;
   --red:       #FD1D1D;
   --purple:    #833AB4;
-  --gradient:  linear-gradient(90deg, #833AB4 0%, #FD1D1D 50%, #FCB045 100%);
+  --gradient:  #FF4422;
 
   --success:   #4ade80;
   --error:     #f87171;
-  --warn:      #FCB045;
+  --warn:      #FF4422;
 
   /* Alias usados por los componentes */
   --line:      var(--border);
   --accent:    var(--orange);
+  --accent-bg:     #1E100C;
+  --accent-border: #3A1A10;
   --signal:    var(--success);
   --danger:    var(--error);
 
-  --radius:    10px;
-  --radius-sm: 6px;
+  --radius:      14px;
+  --radius-sm:   9px;
+  --radius-pill: 999px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  font-family: 'Poppins', system-ui, sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
@@ -46,7 +51,7 @@ body {
 }
 
 a { color: inherit; text-decoration: none; }
-h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+h1, h2, h3 { font-family: var(--font-unbounded), sans-serif; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
 
 /* ── Botones ── */
