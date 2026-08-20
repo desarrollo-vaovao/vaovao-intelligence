@@ -39,7 +39,7 @@ Se elimina `--gradient` y todo su uso (botón primario, indicador de nav activo)
 
 ### `lib/Shell.jsx` (reescritura)
 - **Sidebar**: marca (VAOVAO / INTELLIGENCE), selector de cliente activo, nav con las 4 secciones reales, tarjeta de estado de sincronización de Meta, botón de colapsar sidebar (persistido en `localStorage`, ancho con transición CSS).
-- **Header**: breadcrumb (nombre de la sección activa), `DateRangePicker` existente reubicado ahí, toggle de moneda USD/GTQ (preferencia visual persistida en `localStorage`, sin lógica de conversión — nada la consume todavía), campana de notificaciones (elemento visual estático, sin backend de notificaciones), menú de usuario (ya existe la data en `useAuth()`).
+- **Header**: breadcrumb (nombre de la sección activa), toggle de moneda USD/GTQ (preferencia visual persistida en `localStorage`, sin lógica de conversión — nada la consume todavía), campana de notificaciones (elemento visual estático, sin backend de notificaciones), menú de usuario (ya existe la data en `useAuth()`). El `DateRangePicker` existente **no** se mueve al header global: es específico del flujo de generación de reportes (presets `periodoMensual`/`periodoQuincenal` atados a esa lógica) y ninguna pantalla activa de esta fase necesita un filtro de fecha genérico — se revisita cuando Resumen/Analítica lo necesiten de verdad.
 - Las 4 rutas nuevas **no se agregan al array `NAV`** — existen como páginas pero no aparecen en el sidebar hasta que se aprueben en su propia fase.
 
 ### `lib/clients.jsx` (nuevo)
