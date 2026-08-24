@@ -18,7 +18,7 @@ from app.api.routes import (
     reports,
     facebook,
 )
-from app.services import browser_pool
+from app.services import assets, browser_pool
 
 # Importar los modelos antes de create_all para que se registren las tablas
 import app.models  # noqa: F401
@@ -27,14 +27,17 @@ import app.models  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Al arrancar: crea las tablas que aún no existan y levanta el navegador
+    Al arrancar: crea las tablas que aún no existan, levanta el navegador
     compartido para generar PDFs (ver app/services/browser_pool.py — evita
-    lanzar un Chromium nuevo por cada reporte).
+    lanzar un Chromium nuevo por cada reporte) y precarga la tipografía del
+    reporte (ver app/services/assets.py — así ni el primer reporte tras un
+    despliegue espera a que baje Poppins).
     Cuando el esquema se estabilice y haya datos reales en producción,
     migrar a Alembic para manejar los cambios sin perder datos.
     """
     Base.metadata.create_all(bind=engine)
     await browser_pool.start()
+    await assets.warm_font()
     yield
     await browser_pool.stop()
 

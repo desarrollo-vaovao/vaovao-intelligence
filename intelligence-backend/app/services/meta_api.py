@@ -22,6 +22,8 @@ import random
 import asyncio
 import httpx
 
+from app.services import perf
+
 API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 # Una consulta de insights en bloque (level=ad/campaign sobre un rango
@@ -113,10 +115,24 @@ def _with_derived_metrics(insights: dict) -> dict:
 _PAGE_SIZE = 200
 
 # Cuánto se espera a que Meta termine de calcular un job asíncrono de
-# insights antes de darse por vencido, y cada cuánto se pregunta por su
-# estado mientras tanto (ver _run_insights_job).
+# insights antes de darse por vencido (ver _run_insights_job).
 _INSIGHTS_JOB_MAX_WAIT = float(os.getenv("META_INSIGHTS_JOB_MAX_WAIT", "180"))
-_INSIGHTS_JOB_POLL_INTERVAL = 1.0
+
+# Cada cuánto se le pregunta a Meta si el job ya terminó. El intervalo ARRANCA
+# CORTO Y VA CRECIENDO, en vez del 1s fijo que había antes: la mayoría de los
+# jobs (cuentas normales, rangos quincenales) terminan en bastante menos de un
+# segundo, y con el intervalo fijo el reporte no se enteraba hasta el siguiente
+# tic. Como se corren DOS jobs en paralelo (campaña y anuncio) y manda el más
+# lento, ese segundo regalado se pagaba casi siempre.
+#
+# El techo se queda en 1s —el mismo valor fijo de antes— y NO más alto: con un
+# techo mayor se abrirían huecos más grandes que los del esquema viejo y los
+# jobs de duración media se detectarían más tarde que antes. Así solo se
+# agregan peticiones al principio (cuando sirven), sin empeorar el gasto de
+# cuota contra el rate limit de Meta (código 17) en los jobs largos.
+_INSIGHTS_JOB_POLL_START = 0.25
+_INSIGHTS_JOB_POLL_MAX = 1.0
+_INSIGHTS_JOB_POLL_FACTOR = 1.5
 
 
 class MetaApiError(Exception):
@@ -305,6 +321,7 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
         raise MetaApiError("Meta no devolvió un identificador de job para los insights.")
 
     waited = 0.0
+    delay = _INSIGHTS_JOB_POLL_START
     while True:
         status_data = await _get(client, str(report_run_id), token,
                                  {"fields": "async_status,async_percent_completion"})
@@ -318,8 +335,9 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
                 "Meta tardó demasiado en calcular los insights de la cuenta. "
                 "Intenta de nuevo en unos minutos."
             )
-        await asyncio.sleep(_INSIGHTS_JOB_POLL_INTERVAL)
-        waited += _INSIGHTS_JOB_POLL_INTERVAL
+        await asyncio.sleep(delay)
+        waited += delay
+        delay = min(delay * _INSIGHTS_JOB_POLL_FACTOR, _INSIGHTS_JOB_POLL_MAX)
 
     return await _get_all(client, f"{report_run_id}/insights", token, {"limit": _PAGE_SIZE})
 
@@ -340,23 +358,28 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        campaigns = await _labeled("Listado de campañas", get_campaigns(client, token, ad_account_id))
+        async with perf.aphase("Meta · listado de campañas") as info:
+            campaigns = await _labeled("Listado de campañas",
+                                       get_campaigns(client, token, ad_account_id))
+            info["campañas"] = len(campaigns)
         if not campaigns:
             return {"campaigns": [], "total_spend": 0.0}
 
         api_fields = _fields_for_campaigns(campaigns)
 
         campaign_insights, ad_insights, ads = await asyncio.gather(
-            _labeled("Insights de campañas", _run_insights_job(
+            perf.timed("Meta · insights de campañas", _labeled("Insights de campañas", _run_insights_job(
                 client, ad_account_id, token, "campaign", ["campaign_id"] + api_fields, time_range,
-            )),
-            _labeled("Insights de anuncios", _run_insights_job(
+            ))),
+            perf.timed("Meta · insights de anuncios", _labeled("Insights de anuncios", _run_insights_job(
                 client, ad_account_id, token, "ad", ["ad_id"] + api_fields, time_range,
-            )),
-            _labeled("Listado de anuncios", _get_all(client, f"{ad_account_id}/ads", token, {
-                "fields": "id,name,campaign_id,creative{thumbnail_url,image_url}",
-                "limit": _PAGE_SIZE,
-            })),
+            ))),
+            perf.timed("Meta · listado de anuncios", _labeled("Listado de anuncios", _get_all(
+                client, f"{ad_account_id}/ads", token, {
+                    "fields": "id,name,campaign_id,creative{thumbnail_url,image_url}",
+                    "limit": _PAGE_SIZE,
+                },
+            ))),
         )
 
         insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)

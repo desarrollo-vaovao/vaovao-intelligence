@@ -11,7 +11,7 @@ pueden ser marcas sin relación entre sí, y mezclarlas en un PDF no sirve.
 from datetime import date
 
 from app.models import AdAccount
-from app.services import meta_api, pdf_generator
+from app.services import meta_api, pdf_generator, perf
 
 _MESES = ["ene", "feb", "mar", "abr", "may", "jun",
           "jul", "ago", "sep", "oct", "nov", "dic"]
@@ -55,9 +55,16 @@ async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date
                     budget: float | None = None, currency: str = "USD") -> tuple[bytes, str]:
     """
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
+
+    El total que se registra aquí es el techo de lo que puede sentir el
+    usuario del lado del servidor: si la suma de las fases (ver app/services/
+    perf.py) no lo explica, el tiempo que falta está en el sondeo del
+    frontend o en la red, no acá.
     """
-    report_data = await build_report_data(account, tokens, date_from, date_to, budget, currency)
-    pdf_bytes = await pdf_generator.generate_pdf(report_data)
+    async with perf.aphase(f"REPORTE · total ({account.label})") as info:
+        report_data = await build_report_data(account, tokens, date_from, date_to, budget, currency)
+        info["campañas"] = len(report_data["campaigns"])
+        pdf_bytes = await pdf_generator.generate_pdf(report_data)
 
     slug = "".join(ch if ch.isalnum() else "-" for ch in account.label.lower()).strip("-")
     filename = f"reporte-{slug}-{date_from.isoformat()}-a-{date_to.isoformat()}.pdf"

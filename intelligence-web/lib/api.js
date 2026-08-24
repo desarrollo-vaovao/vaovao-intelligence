@@ -62,12 +62,27 @@ export const api = {
   // La generación corre en segundo plano en el backend: esto arranca el job,
   // hace polling del estado y descarga el PDF cuando queda listo.
   // onProgress(status) es opcional, se llama en cada vuelta del polling.
+  //
+  // El intervalo ARRANCA CORTO Y CRECE en vez de ser fijo. Con el 1500 ms fijo
+  // que había antes, un reporte que el backend terminaba en 800 ms igual se
+  // sentía de 3 segundos: se esperaba el tic completo ANTES de preguntar
+  // siquiera, y otro medio tic de promedio después de que ya estaba listo.
+  // Ese tiempo no era ni Meta ni el PDF, era la app esperándose a sí misma.
+  //
+  // El techo es 1000 ms —MENOR que el intervalo fijo anterior— a propósito: si
+  // se dejara crecer más (2 s, por ejemplo) se abrirían huecos más grandes que
+  // los de antes y un reporte que termina a los ~5 s se detectaría MÁS TARDE
+  // que con el esquema viejo. Así, los reportes rápidos se detectan casi al
+  // instante y ninguno queda peor. Sondear cada segundo no cuesta nada: el
+  // endpoint de estado solo lee un dict en memoria.
   generateReport: async (body, { onProgress } = {}) => {
     const { job_id } = await request("/reports/generate", { method: "POST", body });
 
     let job;
+    let wait = 300;
     for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, wait));
+      wait = Math.min(wait * 1.4, 1000);
       job = await request(`/reports/jobs/${job_id}`);
       if (onProgress) onProgress(job.status);
       if (job.status === "done" || job.status === "error") break;

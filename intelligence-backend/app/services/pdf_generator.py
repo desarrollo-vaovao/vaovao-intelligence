@@ -11,9 +11,10 @@ Consume la estructura que produce meta_api.get_account_data():
     campaign = {name, objective, insights{}, ads[], spend}
     ad       = {name, image_url, insights{}}
 """
+import asyncio
 from datetime import datetime
 
-from app.services import browser_pool
+from app.services import assets, browser_pool, perf
 
 # ── Formateadores ─────────────────────────────────────────────
 def fmt_number(n) -> str:
@@ -324,15 +325,27 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
     """
 
 
-def generate_report_html(report_data: dict) -> str:
-    """Arma el HTML completo del reporte: una página, un activo comercial."""
+def generate_report_html(report_data: dict, font_css: str | None = None) -> str:
+    """
+    Arma el HTML completo del reporte: una página, un activo comercial.
+
+    `font_css` es Poppins ya incrustada como data: URI (ver assets.font_css).
+    Si viene None se cae al <link> a Google Fonts, que funciona igual pero
+    obliga a Chromium a salir a la red antes de poder imprimir.
+    """
     pages = render_report_page(report_data, report_data.get("currency_symbol", "$"))
+
+    font_block = (
+        f"<style>{font_css}</style>" if font_css else
+        '<link href="https://fonts.googleapis.com/css2'
+        '?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">'
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  {font_block}
   <style>
     * {{ font-family: 'Poppins', Arial, sans-serif; margin: 0; padding: 0; box-sizing: border-box; }}
     body {{ background: #fff; }}
@@ -343,7 +356,55 @@ def generate_report_html(report_data: dict) -> str:
 </html>"""
 
 
+def _rendered_ads(report_data: dict) -> list[dict]:
+    """
+    Los anuncios cuya imagen el HTML de verdad va a mostrar: el mejor anuncio
+    de cada campaña (render_campaign_card solo dibuja ads[0]). Bajar las demás
+    sería trabajo tirado a la basura.
+    """
+    out = []
+    for c in report_data.get("campaigns") or []:
+        ads = c.get("ads") or []
+        if ads and ads[0].get("image_url"):
+            out.append(ads[0])
+    return out
+
+
+def _apply_inlined_images(ads: list[dict], inlined: dict[str, str]) -> None:
+    """
+    Cambia la URL remota de cada anuncio por su data: URI.
+
+    Si una imagen NO se pudo bajar, se le quita la URL en vez de dejarla:
+    ya sabemos que esa URL no responde, y dejarla puesta hacía que Chromium
+    la intentara otra vez con `wait_until="load"`, que espera hasta el timeout
+    de Playwright. Medido con una URL muerta, eso sumaba ~21 s al reporte —
+    justo lo contrario de lo que busca incrustar los recursos. Sin URL sale el
+    placeholder de "Sin imagen" y el PDF se imprime al instante.
+    """
+    for ad in ads:
+        ad["image_url"] = inlined.get(ad["image_url"])
+
+
 async def generate_pdf(report_data: dict) -> bytes:
-    """Renderiza el HTML a PDF con el navegador compartido (browser_pool)."""
-    html = generate_report_html(report_data)
-    return await browser_pool.render_pdf(html)
+    """
+    Renderiza el HTML a PDF con el navegador compartido (browser_pool).
+
+    La fuente y los thumbnails se bajan ANTES, en paralelo entre sí, y se
+    incrustan en el HTML: así la página que recibe Chromium no tiene ni una
+    petición de red pendiente y `wait_until="load"` se cumple de inmediato.
+    Antes, esas descargas ocurrían dentro del render y una sola URL lenta de
+    fbcdn dejaba el PDF colgado hasta que respondiera.
+    """
+    async with perf.aphase("PDF · recursos externos") as info:
+        ads = _rendered_ads(report_data)
+        font_css, inlined = await asyncio.gather(
+            assets.font_css(),
+            assets.inline_images([ad["image_url"] for ad in ads]),
+        )
+        info["imágenes"] = f"{len(inlined)}/{len(ads)}"
+
+    _apply_inlined_images(ads, inlined)
+    html = generate_report_html(report_data, font_css)
+
+    async with perf.aphase("PDF · render en Chromium"):
+        return await browser_pool.render_pdf(html)
