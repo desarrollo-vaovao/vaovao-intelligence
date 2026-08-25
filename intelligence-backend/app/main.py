@@ -7,9 +7,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.database import Base, engine
+from app.core.ratelimit import limiter
 from app.api.routes import (
     auth,
     clients,
@@ -17,6 +20,7 @@ from app.api.routes import (
     organization,
     reports,
     facebook,
+    leads,
 )
 from app.services import browser_pool
 
@@ -45,6 +49,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Límite de tasa. slowapi busca el limiter en `app.state`, y sin el handler
+# registrado un límite excedido saldría como 500 en vez de 429 — y un 500 le
+# pide a quien llama que reintente justo lo que acabamos de frenar.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # CORS: en desarrollo permite el frontend local; en producción, los orígenes de CORS_ORIGINS.
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +74,7 @@ app.include_router(users.router)
 app.include_router(organization.router)
 app.include_router(reports.router)
 app.include_router(facebook.router)
+app.include_router(leads.router)
 
 
 @app.get("/health", tags=["health"])
