@@ -165,7 +165,13 @@ class LeadAudit(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # NULL significa "lo hizo el sistema": la ingesta por webhook no actúa en
+    # nombre de ningún usuario, y sin esto la fila `created` de un lead nacido
+    # de Meta no se podría escribir. Al pintar la bitácora, un user_id nulo se
+    # muestra como "Sistema".
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     # created | status_changed | assigned | notes_added | notes_changed
     action: Mapped[str] = mapped_column(String(32))
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -173,7 +179,35 @@ class LeadAudit(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     lead: Mapped["Lead"] = relationship()
-    user: Mapped["User"] = relationship()
+    user: Mapped["User | None"] = relationship()
+
+
+class OrphanLead(Base):
+    """
+    Lead que llegó de una página de Facebook que nadie configuró todavía.
+
+    No se puede atribuir a un cliente (no hay `ClientPage` con ese `page_id`,
+    así que no hay `client_id` ni `org_id` que ponerle), pero tampoco se tira:
+    descartarlo con una línea de log es perder un lead real —plata— por un
+    error de configuración que nadie va a notar. Se guarda aquí sin atribuir y,
+    cuando alguien registre esa página, `reconcile_orphans()` lo convierte en
+    un `Lead` normal y le marca `resolved_at`.
+
+    `leadgen_id` es único también aquí, y la deduplicación mira las DOS tablas:
+    un `leadgen_id` que ya existe como `Lead` no vuelve a entrar como huérfano.
+    Por eso esta tabla no tiene org_id: es justo el dato que falta.
+    """
+    __tablename__ = "orphan_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    page_id: Mapped[str] = mapped_column(String(64), index=True)
+    form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    form_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Se llena cuando el huérfano ya fue convertido en Lead real.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FacebookConnection(Base):

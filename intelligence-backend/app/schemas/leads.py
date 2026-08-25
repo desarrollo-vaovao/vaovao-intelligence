@@ -68,7 +68,12 @@ class LeadListResponse(BaseModel):
 class AuditEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     action: LeadAuditAction
-    user: UserSummary
+    # `None` significa "lo hizo el sistema" — así entra la fila `created` de
+    # todo lead que llegó por webhook, que no actúa en nombre de ningún
+    # usuario (ver `LeadAudit.user_id` en app/models/__init__.py). El front
+    # lo pinta como "Sistema"; si este campo fuera obligatorio, el detalle de
+    # cualquier lead nacido de Meta reventaría al serializarse.
+    user: UserSummary | None = None
     old_value: str | None = None
     new_value: str
     timestamp: datetime

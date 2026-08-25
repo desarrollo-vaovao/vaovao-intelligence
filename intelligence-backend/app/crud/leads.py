@@ -29,7 +29,7 @@ from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models import Lead, LeadAudit, User, UserRole
+from app.models import Lead, LeadAudit, OrphanLead, User, UserRole
 
 # Tope duro de tamaño de página: nadie pide 100.000 leads de un jalón.
 MAX_PAGE_SIZE = 500
@@ -374,7 +374,7 @@ def record_audit(
     db: Session,
     *,
     lead_id: int,
-    user_id: int,
+    user_id: int | None,
     action: str,
     new_value: str,
     old_value: str | None = None,
@@ -384,6 +384,12 @@ def record_audit(
 
     `action` debe ser un valor de `LeadAuditAction` (app/schemas/leads.py):
     la columna es `String(32)` y la base NO valida el contenido.
+
+    `user_id=None` significa "lo hizo el sistema" — es como entra la fila
+    `created` de un lead que llegó por webhook, donde no hay ningún usuario
+    en cuyo nombre actuar. No tiene valor por defecto a propósito: quien
+    escribe en la bitácora tiene que decir explícitamente si hay un humano
+    detrás o no, para que un `None` nunca sea un descuido.
     """
     entry = LeadAudit(
         lead_id=lead_id,
@@ -416,3 +422,64 @@ def get_audit_log(db: Session, lead_id: int, limit: int | None = None) -> list[L
     if limit is not None:
         stmt = stmt.limit(max(1, min(int(limit), MAX_PAGE_SIZE)))
     return list(db.scalars(stmt).all())
+
+
+# ── Huérfanos ────────────────────────────────────────────────────
+def get_orphan_by_leadgen_id(db: Session, leadgen_id: str) -> OrphanLead | None:
+    """Huérfano por el id de Meta, resuelto o no.
+
+    Se busca sin filtrar por `resolved_at` a propósito: `leadgen_id` es
+    UNIQUE en la tabla, así que un huérfano ya resuelto sigue ocupando ese
+    valor y volver a insertarlo reventaría el índice.
+    """
+    return db.scalar(select(OrphanLead).where(OrphanLead.leadgen_id == leadgen_id))
+
+
+def create_orphan_lead(
+    db: Session,
+    *,
+    leadgen_id: str,
+    page_id: str,
+    form_data: dict | None = None,
+    form_id: str | None = None,
+    campaign_name: str | None = None,
+    commit: bool = True,
+) -> OrphanLead:
+    """Guarda un lead que no se pudo atribuir a ningún cliente.
+
+    No lleva `org_id` ni `client_id` porque son justo los datos que faltan
+    (ver `OrphanLead` en app/models/__init__.py). Quien llama debe haber
+    comprobado antes, con `get_lead_by_leadgen_id()` y
+    `get_orphan_by_leadgen_id()`, que ese `leadgen_id` no exista ya en
+    ninguna de las dos tablas.
+    """
+    orphan = OrphanLead(
+        leadgen_id=leadgen_id,
+        page_id=page_id,
+        form_id=form_id,
+        campaign_name=campaign_name,
+        form_data=form_data if form_data is not None else {},
+    )
+    db.add(orphan)
+    if commit:
+        db.commit()
+        db.refresh(orphan)
+    else:
+        db.flush()
+    return orphan
+
+
+def list_pending_orphans(db: Session, page_id: str | None = None) -> list[OrphanLead]:
+    """Huérfanos que todavía no se convirtieron en `Lead` (`resolved_at IS NULL`).
+
+    Sin `page_id` devuelve todos los pendientes — así el endpoint de estado
+    puede decir cuántos hay y de qué páginas, que es lo que vuelve visible
+    una página sin configurar sin tener que leer logs.
+
+    Orden por `received_at` ascendente: al reconciliar, los leads entran al
+    pipeline en el mismo orden en que Meta los mandó.
+    """
+    stmt = select(OrphanLead).where(OrphanLead.resolved_at.is_(None))
+    if page_id is not None:
+        stmt = stmt.where(OrphanLead.page_id == page_id)
+    return list(db.scalars(stmt.order_by(OrphanLead.received_at, OrphanLead.id)).all())

@@ -16,8 +16,9 @@ Quedan las dos responsabilidades que la capa CRUD deliberadamente NO cubre:
 
 A. `ingest_lead()` — ingesta del webhook. Enruta `page_id -> ClientPage ->
    Client -> org_id` (el CRUD recibe `org_id`/`client_id` ya resueltos y no
-   sabe de páginas), deduplica por `leadgen_id`, y decide qué campos puede
-   pisar una re-entrega de Meta. Nada de eso es una query.
+   sabe de páginas), deduplica por `leadgen_id` contra las DOS tablas de
+   leads, guarda como huérfano lo que no se puede atribuir, y decide qué
+   campos puede pisar una re-entrega de Meta. Nada de eso es una query.
 
 B. `apply_lead_update()` — actualización auditada. Compara valor viejo contra
    nuevo para saber qué cambió *de verdad*, traduce el cambio a una acción de
@@ -25,6 +26,10 @@ B. `apply_lead_update()` — actualización auditada. Compara valor viejo contra
    *escritura* (distinto al de lectura) y mete todo — lead + bitácora — en una
    sola transacción. `crud.update_lead` y `crud.record_audit` son dos
    escrituras independientes; coserlas de forma atómica es trabajo de aquí.
+
+C. `reconcile_orphans()` — rescate de los huérfanos de una página que ya se
+   configuró. Es la segunda mitad de (A): sin ella, la tabla `orphan_leads`
+   sería un cementerio en vez de una sala de espera.
 
 Errores
 -------
@@ -37,6 +42,7 @@ import enum
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -44,7 +50,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.crud import leads as crud
-from app.models import ClientPage, Lead, LeadAudit, User, UserRole
+from app.models import Client, ClientPage, Lead, LeadAudit, OrphanLead, User, UserRole
 from app.schemas.leads import LeadAuditAction, LeadSyncPayload
 
 logger = logging.getLogger(__name__)
@@ -76,48 +82,75 @@ class LeadValidationError(LeadServiceError):
 
 
 class UnknownPageError(LeadServiceError):
-    """Llegó un lead de un `page_id` que ninguna `ClientPage` reclama.
+    """Se pidió reconciliar un `page_id` que ninguna `ClientPage` reclama.
 
-    El lead NO se puede atribuir a ningún tenant, así que no se guarda: meterlo
-    con un `client_id` inventado sería peor que perderlo. Antes de levantar
-    esta excepción se deja un WARNING en el log con `page_id`, `leadgen_id`,
-    `form_id` y `campaign_name` — ese es el rastro que le permite al operador
-    enterarse después, dar de alta la página y pedirle a Meta la reentrega.
-
-    El webhook de Task 7 DEBE atraparla y responder HTTP 200 igual: cualquier
-    otro código hace que Meta reintente el mismo lead en bucle, y el reintento
-    no va a arreglar que la página no esté configurada.
+    Ya NO la levanta `ingest_lead()`: un webhook de página desconocida es un
+    caso esperado y su lead se guarda como `OrphanLead` (ver `IngestOutcome`).
+    Aquí sobrevive para `reconcile_orphans()`, donde sí es un error: quien
+    llama afirma que la página acaba de configurarse, y si no existe está
+    reconciliando contra la nada — devolver 0 en silencio escondería el error
+    de tipeo en el `page_id`.
     """
 
-    def __init__(self, page_id: str, leadgen_id: str) -> None:
+    def __init__(self, page_id: str) -> None:
         self.page_id = page_id
-        self.leadgen_id = leadgen_id
         super().__init__(
             f"No hay ninguna ClientPage con page_id={page_id!r}; "
-            f"el lead {leadgen_id!r} no se puede atribuir a ninguna organización."
+            "no hay a qué cliente atribuirle sus leads."
         )
 
 
 # ── Resultado de la ingesta ──────────────────────────────────────
+class IngestOutcome(str, enum.Enum):
+    """Los tres finales posibles de una entrega del webhook.
+
+    Los tres se responden con HTTP 200: cualquier otro código hace que Meta
+    reintente el mismo lead en bucle, y el reintento no arregla ni una
+    reentrega ni una página sin configurar. El código de estado dice "te
+    escuché"; qué pasó con el lead lo dice este valor, en el cuerpo.
+    """
+
+    created = "created"      # lead nuevo, atribuido a su cliente
+    updated = "updated"      # reentrega de Meta de un lead ya conocido
+    orphaned = "orphaned"    # página sin configurar: guardado sin atribuir
+
+
 @dataclass(frozen=True)
 class IngestResult:
     """Lo que la ingesta le devuelve al webhook.
 
-    `created` es la respuesta a "¿esto era nuevo?" — que es justo lo que el
-    endpoint necesita para distinguir la primera entrega de Meta de sus
-    reentregas sin volver a consultar la base.
+    Por qué el caso huérfano es un valor y no una excepción
+    -------------------------------------------------------
+    Antes, un `page_id` desconocido levantaba `UnknownPageError` porque el
+    lead se perdía: no había nada que devolver. Ahora se guarda, así que la
+    ingesta terminó bien —hay una fila nueva en la base— y el webhook
+    responde 200 igual que en los otros dos casos. Señalar con una excepción
+    un final exitoso y rutinario (Meta reentrega huérfanos como reentrega
+    cualquier otra cosa) obligaría al endpoint a poner su camino feliz dentro
+    de un `except`, y a repetir el mapeo a 200 en dos lugares distintos donde
+    un futuro `raise HTTPException(400)` pasaría desapercibido.
+
+    `outcome` distingue los tres finales, y `action` lo entrega tal cual para
+    `SyncWebhookResponse.action`. `lead` viene poblado en `created`/`updated`
+    y `orphan` en `orphaned`; nunca los dos, nunca ninguno.
     """
 
-    lead: Lead
-    created: bool
+    outcome: IngestOutcome
+    lead: Lead | None = None
+    orphan: OrphanLead | None = None
 
     @property
     def action(self) -> str:
-        """`"created"` o `"updated"`, listo para `SyncWebhookResponse.action`."""
-        return "created" if self.created else "updated"
+        """`"created"`, `"updated"` u `"orphaned"`, para la respuesta HTTP."""
+        return self.outcome.value
 
 
 # ── Helpers internos ─────────────────────────────────────────────
+def _now() -> datetime:
+    """Ahora, con zona. Mismo criterio que el `default` de los modelos."""
+    return datetime.now(timezone.utc)
+
+
 def _raw(value: Any) -> Any:
     """Valor crudo de un Enum. `Lead.status` es `String(32)`, no un Enum de BD.
 
@@ -284,8 +317,125 @@ def _refresh_from_meta(db: Session, lead: Lead, payload: LeadSyncPayload) -> Lea
     return lead
 
 
+def _create_lead_with_audit(
+    db: Session,
+    *,
+    client: Client,
+    leadgen_id: str,
+    form_data: dict | None,
+    form_id: str | None,
+    campaign_name: str | None,
+    status: str = "nuevo",
+    received_at: datetime | None = None,
+    resolve_orphan: OrphanLead | None = None,
+) -> Lead:
+    """Inserta un lead y su fila `created` de bitácora en UNA transacción.
+
+    `user_id=None` en la bitácora es lo que hace posible esta fila: el webhook
+    no actúa en nombre de nadie, y hasta que `LeadAudit.user_id` fue nullable
+    la acción `created` no tenía emisor posible y sencillamente no se escribía
+    (ver §14.2 del spec). NULL se lee como "lo hizo el sistema".
+
+    `new_value` guarda la etapa con la que nace el lead. La columna es NOT
+    NULL y tenía que llevar algo: se elige el estado —y no, por ejemplo, el
+    `leadgen_id`— para que la bitácora se lea como una sola línea de tiempo
+    del pipeline, donde la fila `created` da el punto de partida que la
+    primera `status_changed` usa como `old_value`.
+
+    `resolve_orphan`, si viene, se marca resuelto DENTRO de la misma
+    transacción: o quedan el `Lead`, su bitácora y el huérfano cerrado, o no
+    queda nada de las tres cosas. Un commit por separado dejaría, ante una
+    caída en medio, o un huérfano resuelto sin su `Lead` (el lead se perdió,
+    que es justo lo que esta tabla existe para evitar) o un `Lead` cuyo
+    huérfano sigue pendiente (la próxima reconciliación intentaría duplicarlo).
+
+    No atrapa `IntegrityError`: quién puede tratarlo como reentrega y quién no
+    depende del que llama, y taparlo aquí le quitaría esa decisión.
+    """
+    try:
+        lead = crud.create_lead(
+            db,
+            org_id=client.org_id,
+            client_id=client.id,
+            leadgen_id=leadgen_id,
+            form_data=form_data,
+            form_id=form_id,
+            campaign_name=campaign_name,
+            status=status,
+            received_at=received_at,
+            commit=False,
+        )
+        crud.record_audit(
+            db,
+            lead_id=lead.id,
+            user_id=None,  # lo hizo el sistema
+            action=LeadAuditAction.created.value,
+            old_value=None,
+            new_value=lead.status,
+            commit=False,
+        )
+        if resolve_orphan is not None:
+            resolve_orphan.resolved_at = _now()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(lead)
+    return lead
+
+
+def _store_orphan(db: Session, payload: LeadSyncPayload) -> OrphanLead:
+    """Guarda (o recupera) el huérfano de un `page_id` sin configurar.
+
+    Idempotente por `leadgen_id`: Meta reentrega los huérfanos igual que
+    cualquier otro lead, y una reentrega no puede dejar una segunda fila. El
+    huérfano ya guardado se devuelve tal cual, sin refrescarlo con el payload
+    nuevo — la reentrega de Meta trae el mismo contenido, y el estado que
+    importa aquí (`resolved_at`) no lo decide el webhook.
+
+    El WARNING se emite sólo la primera vez: repetirlo en cada reentrega
+    convertiría el log en ruido justo cuando el operador lo necesita legible.
+    """
+    existing = crud.get_orphan_by_leadgen_id(db, payload.leadgen_id)
+    if existing is not None:
+        logger.info(
+            "Reentrega de un lead huérfano ya guardado; no se duplica. "
+            "page_id=%s leadgen_id=%s",
+            payload.page_id,
+            payload.leadgen_id,
+        )
+        return existing
+
+    logger.warning(
+        "Lead no atribuible: page_id sin ClientPage configurada. Se guarda "
+        "como huérfano y se reconciliará cuando la página se dé de alta. "
+        "page_id=%s leadgen_id=%s form_id=%s campaign_name=%s",
+        payload.page_id,
+        payload.leadgen_id,
+        payload.form_id,
+        payload.campaign_name,
+    )
+    try:
+        return crud.create_orphan_lead(
+            db,
+            leadgen_id=payload.leadgen_id,
+            page_id=payload.page_id,
+            form_data=payload.form_data,
+            form_id=payload.form_id,
+            campaign_name=payload.campaign_name,
+        )
+    except IntegrityError:
+        # Dos entregas del mismo huérfano que pasaron el SELECT a la vez.
+        db.rollback()
+        existing = crud.get_orphan_by_leadgen_id(db, payload.leadgen_id)
+        if existing is None:
+            raise  # El UNIQUE que reventó era otro; no lo tapamos.
+        return existing
+
+
 def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
-    """Crea o actualiza el lead que manda el servicio `leads_traker`.
+    """Crea, actualiza o aparta el lead que manda el servicio `leads_traker`.
 
     El `token` del payload NO se verifica aquí: eso es autenticación y la hace
     el endpoint antes de llamar (ver `LeadSyncPayload.token`).
@@ -294,42 +444,42 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
     ------------
     `page_id -> ClientPage -> Client -> org_id`. No existe `Client.page_id`:
     un cliente puede tener varias páginas de Facebook, y por eso la llave vive
-    en su propia tabla.
+    en su propia tabla. Si esa página no está configurada, el lead NO se tira:
+    va a `orphan_leads` y el resultado es `orphaned` (§14.1 del spec).
 
     Deduplicación
     -------------
-    Obligatoria, no opcional — Meta reentrega. `leadgen_id` es único global, y
-    se comprueba dos veces: con un SELECT previo (el caso normal) y atrapando
-    el `IntegrityError` del UNIQUE (el caso de dos reentregas concurrentes que
-    pasan el SELECT a la vez, donde el índice es el único árbitro real).
+    Obligatoria, no opcional — Meta reentrega. `leadgen_id` es único global y
+    la dedup mira las DOS tablas: primero `leads`, y sólo en el camino del
+    huérfano también `orphan_leads`. Por eso el SELECT de `leads` va ANTES de
+    resolver la página: un lead que ya existe es una reentrega y punto,
+    aunque su `ClientPage` haya sido borrada entre una entrega y la otra —
+    mandarlo a `orphan_leads` en ese caso lo duplicaría, y la reconciliación
+    tendría que deshacerlo después.
 
-    Levanta `UnknownPageError` si el `page_id` no está configurado.
+    Cada comprobación se hace dos veces: con un SELECT previo (el caso normal)
+    y atrapando el `IntegrityError` del UNIQUE (el caso de dos reentregas
+    concurrentes que pasan el SELECT a la vez, donde el índice es el único
+    árbitro real).
+
+    Nunca levanta `UnknownPageError`: ver `IngestResult`.
     """
-    page = db.scalar(select(ClientPage).where(ClientPage.page_id == payload.page_id))
-    if page is None:
-        logger.warning(
-            "Lead no atribuible: page_id sin ClientPage configurada. "
-            "page_id=%s leadgen_id=%s form_id=%s campaign_name=%s",
-            payload.page_id,
-            payload.leadgen_id,
-            payload.form_id,
-            payload.campaign_name,
-        )
-        raise UnknownPageError(page_id=payload.page_id, leadgen_id=payload.leadgen_id)
-
-    client = page.client
-
     # `org_id=None` a propósito: el webhook se autenticó con el token
     # compartido y todavía no sabe de qué tenant es el lead.
     existing = crud.get_lead_by_leadgen_id(db, payload.leadgen_id)
     if existing is not None:
-        return IngestResult(lead=_refresh_from_meta(db, existing, payload), created=False)
+        return IngestResult(
+            IngestOutcome.updated, lead=_refresh_from_meta(db, existing, payload)
+        )
+
+    page = db.scalar(select(ClientPage).where(ClientPage.page_id == payload.page_id))
+    if page is None:
+        return IngestResult(IngestOutcome.orphaned, orphan=_store_orphan(db, payload))
 
     try:
-        lead = crud.create_lead(
+        lead = _create_lead_with_audit(
             db,
-            org_id=client.org_id,
-            client_id=client.id,
+            client=page.client,
             leadgen_id=payload.leadgen_id,
             form_data=payload.form_data,
             form_id=payload.form_id,
@@ -339,13 +489,105 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
     except IntegrityError:
         # Carrera con otra entrega del mismo leadgen_id: el UNIQUE hizo su
         # trabajo. Se trata como reentrega, que es lo que es.
-        db.rollback()
         existing = crud.get_lead_by_leadgen_id(db, payload.leadgen_id)
         if existing is None:
             raise  # El UNIQUE que reventó era otro; no lo tapamos.
-        return IngestResult(lead=_refresh_from_meta(db, existing, payload), created=False)
+        return IngestResult(
+            IngestOutcome.updated, lead=_refresh_from_meta(db, existing, payload)
+        )
 
-    return IngestResult(lead=lead, created=True)
+    return IngestResult(IngestOutcome.created, lead=lead)
+
+
+# ── C. Reconciliación de huérfanos ───────────────────────────────
+def _mark_orphan_resolved(db: Session, orphan: OrphanLead) -> None:
+    """Cierra un huérfano que no hay que convertir: su `Lead` ya existe."""
+    orphan.resolved_at = _now()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def reconcile_orphans(db: Session, page_id: str) -> int:
+    """Convierte en `Lead` los huérfanos pendientes de una página ya configurada.
+
+    Devuelve cuántos se convirtieron de verdad, para que quien llame lo pueda
+    reportar ("se recuperaron 12 leads"). Los huérfanos que se cierran porque
+    su `Lead` ya existía NO cuentan: no se recuperó nada nuevo.
+
+    Cada lead se convierte en su propia transacción (ver
+    `_create_lead_with_audit`), no todos en una: con una sola, un `leadgen_id`
+    problemático en la posición 40 tiraría abajo los 39 rescates anteriores.
+    Aislados, la reconciliación avanza y es reentrante — volver a correrla no
+    duplica nada porque los ya convertidos dejaron de estar pendientes.
+
+    Sólo mira `resolved_at IS NULL`. Un `leadgen_id` que ya existe como `Lead`
+    —carrera con el webhook, o alta manual— se marca resuelto sin duplicarlo.
+
+    Quién la llama
+    --------------
+    El disparador natural es dar de alta una `ClientPage`: ese endpoint no
+    existe todavía, así que esta función es autónoma a propósito y se puede
+    invocar sola (desde un shell, un job, o el endpoint de administración
+    cuando exista). Levanta `UnknownPageError` si la página sigue sin
+    configurarse — reconciliar contra la nada es un error de quien llama.
+    """
+    page = db.scalar(select(ClientPage).where(ClientPage.page_id == page_id))
+    if page is None:
+        raise UnknownPageError(page_id=page_id)
+
+    client = page.client
+    pending = crud.list_pending_orphans(db, page_id)
+    converted = 0
+
+    for orphan in pending:
+        existing = crud.get_lead_by_leadgen_id(db, orphan.leadgen_id)
+        if existing is not None:
+            logger.info(
+                "Huérfano ya presente como lead #%s; se marca resuelto sin duplicar. "
+                "page_id=%s leadgen_id=%s",
+                existing.id,
+                page_id,
+                orphan.leadgen_id,
+            )
+            _mark_orphan_resolved(db, orphan)
+            continue
+
+        try:
+            _create_lead_with_audit(
+                db,
+                client=client,
+                leadgen_id=orphan.leadgen_id,
+                # Copia: el dict del huérfano no debe quedar compartido con
+                # el Lead nuevo, o editar uno mutaría al otro en memoria.
+                form_data=dict(orphan.form_data or {}),
+                form_id=orphan.form_id,
+                campaign_name=orphan.campaign_name,
+                # El lead llegó cuando llegó, no cuando alguien configuró la
+                # página: si se pusiera `now`, un lead de hace tres días
+                # aparecería arriba en la bandeja como si fuera reciente.
+                received_at=orphan.received_at,
+                resolve_orphan=orphan,
+            )
+        except IntegrityError:
+            # El `Lead` apareció entre el SELECT de arriba y este INSERT.
+            db.rollback()
+            if crud.get_lead_by_leadgen_id(db, orphan.leadgen_id) is None:
+                raise  # El UNIQUE que reventó era otro; no lo tapamos.
+            _mark_orphan_resolved(db, orphan)
+            continue
+
+        converted += 1
+
+    logger.info(
+        "Reconciliación de huérfanos: page_id=%s pendientes=%s convertidos=%s",
+        page_id,
+        len(pending),
+        converted,
+    )
+    return converted
 
 
 # ── B. Actualización auditada ────────────────────────────────────
