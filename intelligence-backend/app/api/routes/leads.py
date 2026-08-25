@@ -70,7 +70,7 @@ from app.core.config import LEADS_SYNC_TOKEN_DEV_DEFAULT, settings
 from app.core.database import get_db
 from app.core.ratelimit import LIMITS, limiter
 from app.crud import leads as crud
-from app.models import Client, ClientPage, Lead, User, UserRole
+from app.models import Client, Lead, User, UserRole
 from app.schemas.leads import (
     AuditEntry,
     LeadListItem,
@@ -91,6 +91,7 @@ from app.services.leads_service import (
     IngestResult,
     LeadPermissionError,
     LeadValidationError,
+    PageOwnershipError,
     UnknownPageError,
     apply_lead_update,
     ingest_lead,
@@ -728,17 +729,22 @@ def reconcile_page_orphans(
 
     La página tiene que ser de la organización de quien llama
     --------------------------------------------------------
-    `reconcile_orphans` es autónomo a propósito (se puede llamar desde un
-    shell o un job) y por eso no sabe de usuarios: le basta el `page_id`.
-    Expuesto tal cual, un `admin` de la organización A podría disparar la
-    conversión de los huérfanos de una página de la organización B — no vería
-    esos leads (nacen con el `org_id` de B), pero sí estaría escribiendo en la
-    bandeja de otro tenant. La comprobación de propiedad se hace aquí, que es
-    donde por primera vez hay un usuario con quien compararla.
+    `reconcile_orphans` sigue siendo autónomo (se puede llamar desde un shell
+    o un job) y por eso no sabe de usuarios, pero ya no le basta el `page_id`:
+    exige el `org_id` esperado y rechaza la página que sea de otro tenant.
+    Este endpoint es quien traduce "quien llama" a ese `org_id` — es donde por
+    primera vez hay un usuario del cual sacarlo.
+
+    Este router NO repite la comprobación de propiedad. La hacía antes, cuando
+    era el único sitio donde existía; ahora sería una segunda copia de la
+    misma query y la misma comparación, imposible de saltarse por un lado e
+    imposible de recordar actualizar por el otro. La regla vive en la capa de
+    servicio, que es la que ningún llamador futuro puede esquivar.
 
     Una página que no existe y una que es de otra organización responden lo
     mismo, 404: confirmar "esa página existe pero no es tuya" ya es contar
-    algo de la otra organización.
+    algo de la otra organización. Por eso `UnknownPageError` y
+    `PageOwnershipError` se mapean al mismo detalle; quién fue queda en el log.
 
     Idempotente: volver a llamarlo no duplica nada (los ya convertidos dejaron
     de estar pendientes) y devuelve `recovered=0`.
@@ -752,14 +758,19 @@ def reconcile_page_orphans(
     que el mismo balde que la exportación sobra. Ya está acotado por rol, de
     modo que el límite es un tope de daño, no la defensa principal.
     """
-    page = db.scalar(select(ClientPage).where(ClientPage.page_id == page_id))
-    if page is None or page.client is None or page.client.org_id != current.org_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, _PAGE_NOT_FOUND_DETAIL)
-
     try:
-        recovered = reconcile_orphans(db, page_id)
-    except UnknownPageError:
-        # Carrera: la página se borró entre la comprobación de arriba y esto.
+        recovered = reconcile_orphans(db, page_id, org_id=current.org_id)
+    except (UnknownPageError, PageOwnershipError) as exc:
+        # Página inexistente o de otra organización: hacia afuera, el mismo
+        # 404. El log sí distingue — es el único lugar donde puede hacerlo sin
+        # filtrarle al llamante la existencia de la página ajena.
+        logger.warning(
+            "Reconciliación rechazada: page_id=%s user=%s org_id=%s motivo=%s",
+            page_id,
+            current.id,
+            current.org_id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, _PAGE_NOT_FOUND_DETAIL
         ) from None

@@ -100,6 +100,34 @@ class UnknownPageError(LeadServiceError):
         )
 
 
+class PageOwnershipError(LeadServiceError):
+    """La `ClientPage` existe, pero es de otra organización → HTTP 404.
+
+    Convertir un huérfano escribe un `Lead` en la bandeja del tenant dueño de
+    la página. Si quien llama pertenece a otra organización, eso es escribir
+    en la casa ajena: no ve el resultado (el lead nace con el `org_id` del
+    dueño) pero sí lo provoca. Por eso `reconcile_orphans()` exige el `org_id`
+    esperado y levanta esto cuando no coincide, en vez de confiar en que cada
+    llamador se acuerde de comprobarlo antes.
+
+    El router la mapea al MISMO 404 que `UnknownPageError`: distinguirlas de
+    cara afuera ("existe, pero no es tuya") ya sería contar algo de la otra
+    organización. La distinción sobrevive sólo en el log del servidor.
+    """
+
+    def __init__(
+        self, page_id: str, expected_org_id: int, actual_org_id: int | None
+    ) -> None:
+        self.page_id = page_id
+        self.expected_org_id = expected_org_id
+        self.actual_org_id = actual_org_id
+        super().__init__(
+            f"La ClientPage con page_id={page_id!r} pertenece a la organización "
+            f"{actual_org_id!r}, no a la {expected_org_id!r}; reconciliar sus "
+            "huérfanos escribiría leads en otro tenant."
+        )
+
+
 # ── Resultado de la ingesta ──────────────────────────────────────
 class IngestOutcome(str, enum.Enum):
     """Los tres finales posibles de una entrega del webhook.
@@ -510,8 +538,12 @@ def _mark_orphan_resolved(db: Session, orphan: OrphanLead) -> None:
         raise
 
 
-def reconcile_orphans(db: Session, page_id: str) -> int:
+def reconcile_orphans(db: Session, page_id: str, *, org_id: int) -> int:
     """Convierte en `Lead` los huérfanos pendientes de una página ya configurada.
+
+    `org_id` es la organización que quien llama afirma estar reconciliando, y
+    es OBLIGATORIO y sólo por nombre: la página tiene que ser suya o esto no
+    hace nada. Ver "Aislamiento por tenant" abajo.
 
     Devuelve cuántos se convirtieron de verdad, para que quien llame lo pueda
     reportar ("se recuperaron 12 leads"). Los huérfanos que se cierran porque
@@ -533,12 +565,37 @@ def reconcile_orphans(db: Session, page_id: str) -> int:
     invocar sola (desde un shell, un job, o el endpoint de administración
     cuando exista). Levanta `UnknownPageError` si la página sigue sin
     configurarse — reconciliar contra la nada es un error de quien llama.
+
+    Aislamiento por tenant
+    ----------------------
+    Convertir un huérfano es una ESCRITURA en la bandeja de la organización
+    dueña de la página. Esta función no recibe un `User` —a propósito: la
+    llaman jobs y scripts que no actúan en nombre de nadie—, así que el tenant
+    entra como `org_id` explícito y se compara contra el dueño real de la
+    página; si no coinciden, `PageOwnershipError` y no se escribe nada.
+
+    El parámetro es obligatorio y keyword-only justamente para que no exista
+    la llamada distraída. Un `org_id: int | None = None` que sólo comprueba
+    cuando se lo pasan es una defensa que el llamador nuevo —el job, el script
+    de mantenimiento, el endpoint que todavía no existe— olvida sin que nada
+    se lo advierta; así fue como el agujero llegó a producción la primera vez,
+    con la comprobación viviendo únicamente en el router.
     """
     page = db.scalar(select(ClientPage).where(ClientPage.page_id == page_id))
     if page is None:
         raise UnknownPageError(page_id=page_id)
 
     client = page.client
+    # `client is None` no debería pasar (client_id es NOT NULL), pero si
+    # pasara no habría org_id contra el cual comparar: sin poder demostrar la
+    # propiedad, se rechaza igual que si fuera de otro tenant.
+    if client is None or client.org_id != org_id:
+        raise PageOwnershipError(
+            page_id=page_id,
+            expected_org_id=org_id,
+            actual_org_id=None if client is None else client.org_id,
+        )
+
     pending = crud.list_pending_orphans(db, page_id)
     converted = 0
 
@@ -582,8 +639,10 @@ def reconcile_orphans(db: Session, page_id: str) -> int:
         converted += 1
 
     logger.info(
-        "Reconciliación de huérfanos: page_id=%s pendientes=%s convertidos=%s",
+        "Reconciliación de huérfanos: page_id=%s org_id=%s pendientes=%s "
+        "convertidos=%s",
         page_id,
+        org_id,
         len(pending),
         converted,
     )
