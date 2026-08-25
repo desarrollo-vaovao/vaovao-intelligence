@@ -689,3 +689,63 @@ client = page.client
 ```
 
 Esto reemplaza toda referencia a `Client.page_id` en las secciones 6 y 4.6.
+
+---
+
+## 14. Enmiendas (2026-08-25, checkpoint tras Task 5)
+
+### 14.1 Leads huérfanos: no se pierde ninguno
+
+Cuando llega un webhook cuyo `page_id` no corresponde a ninguna `ClientPage`, el lead
+no se puede atribuir a ningún cliente. Descartarlo con una línea de log significa
+perder un lead real por un error de configuración — plata perdida sin que nadie lo note.
+
+Se guarda en su propia tabla, sin atribuir:
+
+```python
+class OrphanLead(Base):
+    """
+    Lead que llegó de una página de Facebook que nadie configuró todavía.
+    No se puede atribuir a un cliente, pero tampoco se tira: cuando alguien
+    registre esa página, `reconciliar_huerfanos` los reprocesa y entran al
+    pipeline como leads normales.
+    """
+    __tablename__ = "orphan_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    page_id: Mapped[str] = mapped_column(String(64), index=True)
+    form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    form_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Se llena cuando el huérfano ya fue convertido en Lead real.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+```
+
+Flujo:
+
+1. Webhook con `page_id` desconocido → se guarda `OrphanLead` y se responde 200.
+   Meta no debe reintentar: el lead ya está a salvo.
+2. Alguien registra la `ClientPage` faltante.
+3. La reconciliación toma los huérfanos pendientes de ese `page_id`, los convierte
+   en `Lead` normales y les marca `resolved_at`.
+
+`leadgen_id` es único también aquí, y la deduplicación debe mirar ambas tablas: un
+`leadgen_id` que ya existe como `Lead` no vuelve a entrar como huérfano.
+
+El endpoint de estado (§4.5) expone cuántos huérfanos hay pendientes y de qué páginas,
+para que la mala configuración sea visible sin leer logs.
+
+### 14.2 Auditoría del sistema: `user_id` pasa a ser nullable
+
+`LeadAudit.user_id` era `NOT NULL`, así que un lead creado por webhook no podía
+generar su fila `created` — el webhook no actúa en nombre de ningún usuario. El valor
+`created` quedaba sin emisor.
+
+`user_id` pasa a `nullable=True`, donde **NULL significa "lo hizo el sistema"**. Es como
+funcionan las bitácoras habitualmente y deja la traza completa: desde que el lead nace
+hasta que se cierra.
+
+Al mostrar la bitácora, un `user_id` nulo se presenta como "Sistema".
+La ingesta por webhook emite ahora su fila `created` con `user_id=None`.
