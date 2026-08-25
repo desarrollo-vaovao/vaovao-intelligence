@@ -11,7 +11,6 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
-from app.core.database import Base, engine
 from app.core.ratelimit import limiter
 from app.api.routes import (
     auth,
@@ -24,20 +23,39 @@ from app.api.routes import (
 )
 from app.services import browser_pool
 
-# Importar los modelos antes de create_all para que se registren las tablas
+# Importa todos los modelos de una vez. Ya no es para `create_all` (ver el
+# lifespan), pero sigue haciendo falta: las `relationship()` se declaran con el
+# nombre de la clase destino en un string, y SQLAlchemy sólo puede resolverlas
+# cuando todas las clases mapeadas están importadas.
 import app.models  # noqa: F401
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Al arrancar: crea las tablas que aún no existan y levanta el navegador
-    compartido para generar PDFs (ver app/services/browser_pool.py — evita
-    lanzar un Chromium nuevo por cada reporte).
-    Cuando el esquema se estabilice y haya datos reales en producción,
-    migrar a Alembic para manejar los cambios sin perder datos.
+    Al arrancar: levanta el navegador compartido para generar PDFs
+    (ver app/services/browser_pool.py — evita lanzar un Chromium nuevo por
+    cada reporte).
+
+    Aquí ya NO se crean tablas
+    --------------------------
+    Antes esto llamaba a `Base.metadata.create_all()`. Ahora el esquema lo
+    versiona Alembic (`alembic/`), y `alembic upgrade head` corre en el
+    arranque del servicio, antes de uvicorn (ver Procfile y Dockerfile).
+
+    Convivir con las dos cosas sería tener dos fuentes de verdad, y no dos
+    equivalentes: `create_all` crea las tablas que faltan pero NUNCA altera
+    una columna de una tabla que ya existe. Es justo lo que dejó a varias
+    bases con `lead_audits.user_id` NOT NULL después de que el modelo lo
+    hiciera nullable. Dejarlo puesto significaría que la app puede fabricarse
+    en silencio un esquema que ninguna migración describe, y que el siguiente
+    `alembic upgrade` se encuentre una base en un estado que no esperaba.
+
+    A cambio, una base nueva (un desarrollador que empieza, o los tests
+    cuando existan) necesita `alembic upgrade head` una vez antes de arrancar.
+    Es un comando más en el README contra una clase entera de derivas
+    silenciosas: vale la pena.
     """
-    Base.metadata.create_all(bind=engine)
     await browser_pool.start()
     yield
     await browser_pool.stop()
