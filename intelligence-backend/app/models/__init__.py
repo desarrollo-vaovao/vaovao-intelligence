@@ -34,21 +34,6 @@ class ClientType(str, enum.Enum):
     multi_station = "multi_station" # varias estaciones/países
 
 
-class LeadStatus(str, enum.Enum):
-    nuevo = "nuevo"           # lead recién creado
-    contactado = "contactado" # lead contactado
-    ganado = "ganado"         # lead convertido
-    perdido = "perdido"       # lead perdido
-
-
-class LeadAuditAction(str, enum.Enum):
-    created = "created"           # lead creado
-    status_changed = "status_changed"  # estado cambió
-    assigned = "assigned"         # lead asignado
-    notes_added = "notes_added"   # notas agregadas
-    notes_changed = "notes_changed"  # notas modificadas
-
-
 class Organization(Base):
     __tablename__ = "organizations"
 
@@ -97,7 +82,9 @@ class Client(Base):
     ad_accounts: Mapped[list["AdAccount"]] = relationship(
         back_populates="client", cascade="all, delete-orphan"
     )
-    leads: Mapped[list["Lead"]] = relationship(cascade="all, delete-orphan")
+    leads: Mapped[list["Lead"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
 
 
 class AdAccount(Base):
@@ -130,7 +117,10 @@ class Lead(Base):
     form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     form_data: Mapped[dict] = mapped_column(JSON, default=dict)
-    status: Mapped[LeadStatus] = mapped_column(Enum(LeadStatus), default=LeadStatus.nuevo)
+    # Etapa del pipeline: nuevo | contactado | ganado | perdido
+    # String y no Enum a propósito: agregar una etapa es un cambio de código,
+    # no un ALTER TYPE en Postgres.
+    status: Mapped[str] = mapped_column(String(32), default="nuevo")
     assigned_to_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -139,30 +129,24 @@ class Lead(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     organization: Mapped["Organization"] = relationship(back_populates="leads")
-    client: Mapped["Client"] = relationship()
+    client: Mapped["Client"] = relationship(back_populates="leads")
     assigned_to: Mapped["User | None"] = relationship()
-    audit_entries: Mapped[list["LeadAudit"]] = relationship(
-        back_populates="lead", cascade="all, delete-orphan"
-    )
 
 
 class LeadAudit(Base):
     """Auditoría de cambios en leads."""
     __tablename__ = "lead_audits"
-    __table_args__ = (
-        Index("idx_leadaudit_lead", "lead_id"),
-        Index("idx_leadaudit_user", "user_id"),
-    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    action: Mapped[LeadAuditAction] = mapped_column(Enum(LeadAuditAction))
+    # created | status_changed | assigned | notes_added | notes_changed
+    action: Mapped[str] = mapped_column(String(32))
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_value: Mapped[str] = mapped_column(Text)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    lead: Mapped["Lead"] = relationship(back_populates="audit_entries")
+    lead: Mapped["Lead"] = relationship()
     user: Mapped["User"] = relationship()
 
 
