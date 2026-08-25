@@ -141,3 +141,59 @@ class SyncWebhookResponse(BaseModel):
     leadgen_id: str
     action: str | None = None
     note: str | None = None
+
+
+# ── Estado del módulo y huérfanos (GET /leads/status) ────────────
+class OrphanPageStatus(BaseModel):
+    """Cuántos leads huérfanos pendientes acumuló una página sin configurar.
+
+    Es la mitad visible de `OrphanLead` (§14.1): sin esto, una página de
+    Facebook mal dada de alta sólo se nota leyendo los WARNING de Railway, y
+    mientras tanto los leads reales se acumulan sin que nadie los trabaje.
+    `oldest_received_at` es lo que dice si el problema es de hoy o de hace
+    tres semanas.
+    """
+    page_id: str
+    pending: int
+    oldest_received_at: datetime
+
+
+class LeadsDiagnostics(BaseModel):
+    """Diagnóstico operativo del módulo. Sólo se entrega a `owner`/`admin`.
+
+    Por qué NO lo ve un `member`: `orphan_leads` no tiene `org_id` —es
+    justamente el dato que falta cuando un lead no se puede atribuir (ver
+    `OrphanLead` en app/models/__init__.py)— así que la lista de huérfanos
+    pendientes es global a la instalación, no de una organización. Entregarla
+    a cualquier usuario autenticado le mostraría a un miembro de la
+    organización A los `page_id` de las páginas mal configuradas de la
+    organización B. Se acota al rol que además es el único que puede hacer
+    algo al respecto (dar de alta la `ClientPage` y reconciliar).
+    """
+    webhook_configured: bool
+    orphans_pending: int
+    orphan_pages: list[OrphanPageStatus]
+
+
+class LeadsModuleStatus(BaseModel):
+    """Salud del módulo de leads.
+
+    `diagnostics` en `null` NO significa "no hay huérfanos": significa "tu rol
+    no ve esta sección". Un 0 ahí sería mentir.
+    """
+    module_available: bool
+    total_leads: int
+    diagnostics: LeadsDiagnostics | None = None
+
+
+class OrphanReconcileResponse(BaseModel):
+    """Resultado de POST /leads/orphans/{page_id}/reconcile.
+
+    `recovered` cuenta sólo los huérfanos que se convirtieron en `Lead` de
+    verdad; los que se cerraron porque su lead ya existía no suman (ver
+    `reconcile_orphans`). `still_pending` debería quedar en 0 y, si no,
+    delata que algo se quedó atrás.
+    """
+    page_id: str
+    recovered: int
+    still_pending: int

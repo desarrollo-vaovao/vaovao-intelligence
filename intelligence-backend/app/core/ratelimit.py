@@ -22,4 +22,19 @@ LIMITS = {
     # techo a una URL filtrada. Ver el docstring del endpoint en
     # app/api/routes/leads.py para el razonamiento del número.
     "leads_sync_webhook": "120/minute",     # 120 leads per minute per IP
+
+    # ── CRM de leads (app/api/routes/leads.py) ──────────────────
+    # A diferencia del webhook, aquí quien llama SÍ es una persona con su
+    # navegador; el balde es por IP, así que un equipo detrás de un mismo NAT
+    # lo comparte. Por eso los límites de lectura son holgados: cortarle la
+    # bandeja a media oficina porque tres personas filtraron a la vez sería
+    # peor que el ataque que se intenta frenar. Los de escritura y los caros
+    # (exportar, reconciliar) sí son estrechos. Cada número está justificado
+    # en el docstring de su endpoint.
+    "leads_list": "120/minute",             # bandeja: filtros + búsqueda + paginar
+    "leads_detail": "240/minute",           # abrir tarjetas: 1 fila por índice
+    "leads_update": "60/minute",            # PATCH: escribe lead + bitácora
+    "leads_export_csv": "20/hour",          # CSV: miles de filas, igual que un PDF
+    "leads_status": "60/minute",            # panel de estado (2 conteos)
+    "leads_reconcile": "20/hour",           # admin: convierte N huérfanos en N leads
 }
