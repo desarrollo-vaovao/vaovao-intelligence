@@ -5,7 +5,9 @@ Jerarquía:
     Organization (el "tenant" — VaoVao, o cada agencia si algún día es producto)
       └── User      (las personas que entran a la plataforma, con rol)
       └── Client    (los clientes de la agencia — reemplaza el clients.js)
-            └── AdAccount  (cuentas publicitarias de Meta; una o varias por cliente)
+            └── AdAccount   (cuentas publicitarias de Meta; una o varias por cliente)
+            └── ClientPage  (páginas de Facebook; enrutan el lead entrante a su cliente)
+            └── Lead        (leads de los formularios de Meta; su bitácora es LeadAudit)
 
 Todo cuelga de Organization → así el aislamiento por tenant es natural:
 cada query filtra por org_id y nadie ve datos de otra organización.
@@ -82,6 +84,9 @@ class Client(Base):
     ad_accounts: Mapped[list["AdAccount"]] = relationship(
         back_populates="client", cascade="all, delete-orphan"
     )
+    pages: Mapped[list["ClientPage"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
     leads: Mapped[list["Lead"]] = relationship(
         back_populates="client", cascade="all, delete-orphan"
     )
@@ -101,6 +106,24 @@ class AdAccount(Base):
     client: Mapped["Client"] = relationship(back_populates="ad_accounts")
 
 
+class ClientPage(Base):
+    """
+    Página de Facebook de un cliente — la llave de enrutamiento de los leads:
+    el webhook de Meta trae un page_id y por él sabemos de qué cliente es el lead.
+    Un cliente puede tener varias páginas, igual que varias cuentas publicitarias.
+    page_id es único a nivel global: una página pertenece a un solo cliente.
+    """
+    __tablename__ = "client_pages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    page_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # ej. "102938475610293"
+    page_name: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    client: Mapped["Client"] = relationship(back_populates="pages")
+
+
 class Lead(Base):
     """Lead generado desde formularios de captura (LeadGen o forms custom)."""
     __tablename__ = "leads"
@@ -117,7 +140,10 @@ class Lead(Base):
     form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     form_data: Mapped[dict] = mapped_column(JSON, default=dict)
-    # Etapa del pipeline: nuevo | contactado | ganado | perdido
+    # Etapa del pipeline (las 5 columnas del Kanban, más el cierre negativo):
+    #     nuevo → contactado → calificado → propuesta → ganado
+    #                                                  → perdido
+    # `perdido` es terminal y se alcanza desde cualquier etapa.
     # String y no Enum a propósito: agregar una etapa es un cambio de código,
     # no un ALTER TYPE en Postgres.
     status: Mapped[str] = mapped_column(String(32), default="nuevo")
