@@ -13,7 +13,7 @@ cada query filtra por org_id y nadie ve datos de otra organización.
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON
+from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -34,6 +34,21 @@ class ClientType(str, enum.Enum):
     multi_station = "multi_station" # varias estaciones/países
 
 
+class LeadStatus(str, enum.Enum):
+    nuevo = "nuevo"           # lead recién creado
+    contactado = "contactado" # lead contactado
+    ganado = "ganado"         # lead convertido
+    perdido = "perdido"       # lead perdido
+
+
+class LeadAuditAction(str, enum.Enum):
+    created = "created"           # lead creado
+    status_changed = "status_changed"  # estado cambió
+    assigned = "assigned"         # lead asignado
+    notes_added = "notes_added"   # notas agregadas
+    notes_changed = "notes_changed"  # notas modificadas
+
+
 class Organization(Base):
     __tablename__ = "organizations"
 
@@ -48,6 +63,7 @@ class Organization(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    leads: Mapped[list["Lead"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     meta_central_tokens: Mapped[list["MetaCentralToken"]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
     )
@@ -81,6 +97,7 @@ class Client(Base):
     ad_accounts: Mapped[list["AdAccount"]] = relationship(
         back_populates="client", cascade="all, delete-orphan"
     )
+    leads: Mapped[list["Lead"]] = relationship(cascade="all, delete-orphan")
 
 
 class AdAccount(Base):
@@ -95,6 +112,59 @@ class AdAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     client: Mapped["Client"] = relationship(back_populates="ad_accounts")
+
+
+class Lead(Base):
+    """Lead generado desde formularios de captura (LeadGen o forms custom)."""
+    __tablename__ = "leads"
+    __table_args__ = (
+        Index("idx_lead_org_client_status", "org_id", "client_id", "status"),
+        Index("idx_lead_org_assigned", "org_id", "assigned_to_id"),
+        Index("idx_lead_received_at", "received_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    form_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[LeadStatus] = mapped_column(Enum(LeadStatus), default=LeadStatus.nuevo)
+    assigned_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="leads")
+    client: Mapped["Client"] = relationship()
+    assigned_to: Mapped["User | None"] = relationship()
+    audit_entries: Mapped[list["LeadAudit"]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan"
+    )
+
+
+class LeadAudit(Base):
+    """Auditoría de cambios en leads."""
+    __tablename__ = "lead_audits"
+    __table_args__ = (
+        Index("idx_leadaudit_lead", "lead_id"),
+        Index("idx_leadaudit_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    action: Mapped[LeadAuditAction] = mapped_column(Enum(LeadAuditAction))
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str] = mapped_column(Text)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    lead: Mapped["Lead"] = relationship(back_populates="audit_entries")
+    user: Mapped["User"] = relationship()
+
 
 class FacebookConnection(Base):
     """Conexión de Facebook de un usuario (una por usuario). Token cifrado."""
