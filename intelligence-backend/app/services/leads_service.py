@@ -1,0 +1,419 @@
+"""
+Capa de servicio del módulo de leads.
+
+Qué vive aquí y qué NO
+----------------------
+El plan original de esta tarea listaba cuatro funciones, dos de ellas
+(`list_leads_for_user`, `get_lead_detail`) meros reenvíos a `app/crud/leads.py`.
+No están. La capa CRUD ya resuelve por sí sola el aislamiento multi-tenant y el
+RBAC de *visibilidad* (`_visibility_conditions`: `owner`/`admin` ven toda la
+organización, `member` sólo lo asignado a él), así que envolverla sólo agregaba
+un marco de pila y un lugar más donde el filtro puede quedar desactualizado.
+El router de Task 8 llama directo a `crud.list_leads_for_user` y
+`crud.get_lead_for_user`.
+
+Quedan las dos responsabilidades que la capa CRUD deliberadamente NO cubre:
+
+A. `ingest_lead()` — ingesta del webhook. Enruta `page_id -> ClientPage ->
+   Client -> org_id` (el CRUD recibe `org_id`/`client_id` ya resueltos y no
+   sabe de páginas), deduplica por `leadgen_id`, y decide qué campos puede
+   pisar una re-entrega de Meta. Nada de eso es una query.
+
+B. `apply_lead_update()` — actualización auditada. Compara valor viejo contra
+   nuevo para saber qué cambió *de verdad*, traduce el cambio a una acción de
+   bitácora, resuelve nombres legibles de personas, aplica el RBAC de
+   *escritura* (distinto al de lectura) y mete todo — lead + bitácora — en una
+   sola transacción. `crud.update_lead` y `crud.record_audit` son dos
+   escrituras independientes; coserlas de forma atómica es trabajo de aquí.
+
+Errores
+-------
+Todo lo que esta capa levanta a propósito hereda de `LeadServiceError`, para
+que el router pueda mapear cada caso a su HTTP sin atrapar `Exception`.
+"""
+from __future__ import annotations
+
+import enum
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.crud import leads as crud
+from app.models import ClientPage, Lead, LeadAudit, User, UserRole
+from app.schemas.leads import LeadAuditAction, LeadSyncPayload
+
+logger = logging.getLogger(__name__)
+
+# Texto que se guarda en la bitácora cuando un lead queda sin responsable o
+# sin notas. La columna `new_value` es NOT NULL, y un string vacío ahí se lee
+# como "se perdió el dato", no como "quedó vacío a propósito".
+SIN_ASIGNAR = "Sin asignar"
+SIN_NOTAS = "(sin notas)"
+
+
+# ── Errores del dominio ──────────────────────────────────────────
+class LeadServiceError(Exception):
+    """Base de todos los errores esperables de esta capa."""
+
+
+class LeadPermissionError(LeadServiceError):
+    """El usuario no tiene permiso para escribir sobre este lead → HTTP 403.
+
+    Es una clase propia y no un `PermissionError` de Python ni un
+    `HTTPException` para que el router decida el código de respuesta sin que
+    la capa de servicio importe FastAPI, y para que nadie tenga que atrapar
+    `Exception` y adivinar de qué se trata.
+    """
+
+
+class LeadValidationError(LeadServiceError):
+    """El cambio pedido no es aplicable (campo inválido, usuario inexistente)."""
+
+
+class UnknownPageError(LeadServiceError):
+    """Llegó un lead de un `page_id` que ninguna `ClientPage` reclama.
+
+    El lead NO se puede atribuir a ningún tenant, así que no se guarda: meterlo
+    con un `client_id` inventado sería peor que perderlo. Antes de levantar
+    esta excepción se deja un WARNING en el log con `page_id`, `leadgen_id`,
+    `form_id` y `campaign_name` — ese es el rastro que le permite al operador
+    enterarse después, dar de alta la página y pedirle a Meta la reentrega.
+
+    El webhook de Task 7 DEBE atraparla y responder HTTP 200 igual: cualquier
+    otro código hace que Meta reintente el mismo lead en bucle, y el reintento
+    no va a arreglar que la página no esté configurada.
+    """
+
+    def __init__(self, page_id: str, leadgen_id: str) -> None:
+        self.page_id = page_id
+        self.leadgen_id = leadgen_id
+        super().__init__(
+            f"No hay ninguna ClientPage con page_id={page_id!r}; "
+            f"el lead {leadgen_id!r} no se puede atribuir a ninguna organización."
+        )
+
+
+# ── Resultado de la ingesta ──────────────────────────────────────
+@dataclass(frozen=True)
+class IngestResult:
+    """Lo que la ingesta le devuelve al webhook.
+
+    `created` es la respuesta a "¿esto era nuevo?" — que es justo lo que el
+    endpoint necesita para distinguir la primera entrega de Meta de sus
+    reentregas sin volver a consultar la base.
+    """
+
+    lead: Lead
+    created: bool
+
+    @property
+    def action(self) -> str:
+        """`"created"` o `"updated"`, listo para `SyncWebhookResponse.action`."""
+        return "created" if self.created else "updated"
+
+
+# ── Helpers internos ─────────────────────────────────────────────
+def _raw(value: Any) -> Any:
+    """Valor crudo de un Enum. `Lead.status` es `String(32)`, no un Enum de BD.
+
+    Se compara y se guarda el string; si se dejara el miembro del Enum, el
+    objeto en memoria dejaría de parecerse a la fila en disco y la comparación
+    `nuevo != LeadStatus.nuevo` daría un cambio falso.
+    """
+    return value.value if isinstance(value, enum.Enum) else value
+
+
+def _role_of(user: User) -> str:
+    """Rol del usuario como string, venga como Enum o como texto."""
+    return getattr(user.role, "value", user.role)
+
+
+def _describe_user(db: Session, user_id: int | None) -> str:
+    """Etiqueta legible de un responsable, para guardar en la bitácora.
+
+    La bitácora se lee meses después, cuando "12" ya no le dice nada a nadie,
+    así que se guarda el nombre. Se conserva también el id porque dos personas
+    pueden llamarse igual.
+
+    El usuario referido puede haber sido borrado desde entonces
+    (`Lead.assigned_to_id` es `ON DELETE SET NULL`, pero un valor *histórico*
+    ya escrito en la bitácora no se limpia). Por eso esto NO revienta si no
+    encuentra la fila: devuelve una etiqueta que dice exactamente eso.
+    """
+    if user_id is None:
+        return SIN_ASIGNAR
+    user = db.get(User, user_id)
+    if user is None:
+        return f"Usuario eliminado (#{user_id})"
+    return f"{user.full_name} (#{user_id})"
+
+
+def _resolve_new_assignee(db: Session, org_id: int, user_id: int | None) -> User | None:
+    """Valida a quién se está asignando el lead. Estricto, a diferencia del histórico.
+
+    Un responsable *nuevo* sí tiene que existir y tiene que ser de la misma
+    organización: asignarle un lead a alguien de otro tenant es una fuga de
+    datos entre organizaciones, que es el peor fallo posible de este módulo.
+    (Un responsable *viejo* que ya no existe se tolera — ver `_describe_user`.)
+    """
+    if user_id is None:
+        return None
+    user = db.get(User, user_id)
+    if user is None or user.org_id != org_id:
+        raise LeadValidationError(
+            f"El usuario #{user_id} no existe o no pertenece a esta organización."
+        )
+    return user
+
+
+def _assert_can_update(lead: Lead, user: User) -> None:
+    """RBAC de ESCRITURA. Ojo: no es el mismo que el de lectura.
+
+    `owner` y `admin` escriben sobre cualquier lead de su organización; un
+    `member` sólo sobre los que tiene asignados — el mismo recorte que
+    `crud._visibility_conditions` aplica al leer, pero aquí no se puede
+    expresar como filtro de query porque el lead ya está en la mano.
+
+    El chequeo de organización va primero y es incondicional: aunque el router
+    ya use `crud.get_lead_for_user` (que filtra por `org_id`), esta capa es
+    invocable desde otros lados y no delega en que alguien más se acuerde.
+    """
+    if lead.org_id != user.org_id:
+        raise LeadPermissionError(
+            f"El lead #{lead.id} no pertenece a la organización del usuario #{user.id}."
+        )
+    if _role_of(user) == UserRole.member.value and lead.assigned_to_id != user.id:
+        raise LeadPermissionError(
+            f"El usuario #{user.id} tiene rol 'member' y sólo puede modificar "
+            f"los leads asignados a él; el lead #{lead.id} no lo está."
+        )
+
+
+def _diff_to_audit_entries(
+    db: Session, lead: Lead, changes: Mapping[str, Any]
+) -> list[tuple[str, str | None, str]]:
+    """Traduce el dict de cambios a filas de bitácora — sólo lo que cambió de verdad.
+
+    Devuelve tuplas `(action, old_value, new_value)`. Un campo presente en
+    `changes` cuyo valor ya es el actual NO produce tupla: la bitácora cuenta
+    la historia del lead, no la de los PATCH que le llegaron, y una fila
+    "cambió de contactado a contactado" es ruido que le quita valor al resto.
+
+    Se lee el estado del lead ANTES de tocarlo; por eso esta función corre
+    antes de `crud.update_lead`.
+    """
+    entries: list[tuple[str, str | None, str]] = []
+
+    if "status" in changes:
+        new_status = _raw(changes["status"])
+        if new_status != lead.status:
+            entries.append(
+                (LeadAuditAction.status_changed.value, lead.status, str(new_status))
+            )
+
+    if "assigned_to_id" in changes:
+        new_id = changes["assigned_to_id"]
+        # `None` explícito ES un cambio (desasignar), y por eso la comparación
+        # es contra el valor actual y no un `if new_id is not None`.
+        if new_id != lead.assigned_to_id:
+            new_user = _resolve_new_assignee(db, lead.org_id, new_id)
+            new_label = SIN_ASIGNAR if new_user is None else f"{new_user.full_name} (#{new_user.id})"
+            entries.append(
+                (
+                    LeadAuditAction.assigned.value,
+                    _describe_user(db, lead.assigned_to_id),
+                    new_label,
+                )
+            )
+
+    if "notes" in changes:
+        # `None` y `""` son la misma cosa para el usuario ("no hay notas"), así
+        # que mandar `""` sobre un lead sin notas no es un cambio.
+        old_notes = lead.notes or ""
+        new_notes = changes["notes"] or ""
+        if new_notes != old_notes:
+            action = (
+                LeadAuditAction.notes_added.value
+                if not old_notes
+                else LeadAuditAction.notes_changed.value
+            )
+            entries.append((action, lead.notes, new_notes or SIN_NOTAS))
+
+    return entries
+
+
+# ── A. Ingesta del webhook ───────────────────────────────────────
+def _refresh_from_meta(db: Session, lead: Lead, payload: LeadSyncPayload) -> Lead:
+    """Reentrega de un lead ya conocido: refresca SÓLO lo que viene de Meta.
+
+    Meta reentrega el mismo `leadgen_id` cuando no recibe un 200 a tiempo, y
+    esa reentrega llega con `status` = el default del schema (`nuevo`). Si la
+    ingesta pisara el estado, un lead que el equipo ya movió a `ganado`
+    volvería a `nuevo` solo, en silencio, y con él se perdería a quién estaba
+    asignado y sus notas. Así que `status`, `assigned_to_id` y `notes` — las
+    tres columnas que edita un humano — no se tocan nunca por esta vía.
+
+    Tampoco se sobrescribe con vacío: un payload sin `form_data` no puede
+    borrar los datos de contacto que sí llegaron la primera vez.
+    """
+    changed = False
+
+    if payload.form_data and payload.form_data != lead.form_data:
+        lead.form_data = payload.form_data
+        changed = True
+    if payload.form_id is not None and payload.form_id != lead.form_id:
+        lead.form_id = payload.form_id
+        changed = True
+    if payload.campaign_name is not None and payload.campaign_name != lead.campaign_name:
+        lead.campaign_name = payload.campaign_name
+        changed = True
+
+    if changed:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(lead)
+
+    return lead
+
+
+def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
+    """Crea o actualiza el lead que manda el servicio `leads_traker`.
+
+    El `token` del payload NO se verifica aquí: eso es autenticación y la hace
+    el endpoint antes de llamar (ver `LeadSyncPayload.token`).
+
+    Enrutamiento
+    ------------
+    `page_id -> ClientPage -> Client -> org_id`. No existe `Client.page_id`:
+    un cliente puede tener varias páginas de Facebook, y por eso la llave vive
+    en su propia tabla.
+
+    Deduplicación
+    -------------
+    Obligatoria, no opcional — Meta reentrega. `leadgen_id` es único global, y
+    se comprueba dos veces: con un SELECT previo (el caso normal) y atrapando
+    el `IntegrityError` del UNIQUE (el caso de dos reentregas concurrentes que
+    pasan el SELECT a la vez, donde el índice es el único árbitro real).
+
+    Levanta `UnknownPageError` si el `page_id` no está configurado.
+    """
+    page = db.scalar(select(ClientPage).where(ClientPage.page_id == payload.page_id))
+    if page is None:
+        logger.warning(
+            "Lead no atribuible: page_id sin ClientPage configurada. "
+            "page_id=%s leadgen_id=%s form_id=%s campaign_name=%s",
+            payload.page_id,
+            payload.leadgen_id,
+            payload.form_id,
+            payload.campaign_name,
+        )
+        raise UnknownPageError(page_id=payload.page_id, leadgen_id=payload.leadgen_id)
+
+    client = page.client
+
+    # `org_id=None` a propósito: el webhook se autenticó con el token
+    # compartido y todavía no sabe de qué tenant es el lead.
+    existing = crud.get_lead_by_leadgen_id(db, payload.leadgen_id)
+    if existing is not None:
+        return IngestResult(lead=_refresh_from_meta(db, existing, payload), created=False)
+
+    try:
+        lead = crud.create_lead(
+            db,
+            org_id=client.org_id,
+            client_id=client.id,
+            leadgen_id=payload.leadgen_id,
+            form_data=payload.form_data,
+            form_id=payload.form_id,
+            campaign_name=payload.campaign_name,
+            status=_raw(payload.status),
+        )
+    except IntegrityError:
+        # Carrera con otra entrega del mismo leadgen_id: el UNIQUE hizo su
+        # trabajo. Se trata como reentrega, que es lo que es.
+        db.rollback()
+        existing = crud.get_lead_by_leadgen_id(db, payload.leadgen_id)
+        if existing is None:
+            raise  # El UNIQUE que reventó era otro; no lo tapamos.
+        return IngestResult(lead=_refresh_from_meta(db, existing, payload), created=False)
+
+    return IngestResult(lead=lead, created=True)
+
+
+# ── B. Actualización auditada ────────────────────────────────────
+def apply_lead_update(
+    db: Session, lead: Lead, changes: Mapping[str, Any], user: User
+) -> list[LeadAudit]:
+    """Aplica `changes` al lead y deja en la bitácora una fila por cambio real.
+
+    `changes` es `payload.model_dump(exclude_unset=True)` de un `LeadUpdate`:
+    una clave ausente es "no lo mandaron", una clave con `None` es "mándalo a
+    null". Ver el docstring de `LeadUpdate` en app/schemas/leads.py.
+
+    Devuelve las filas de bitácora escritas — lista vacía si el PATCH no
+    cambiaba nada. `lead` se modifica en sitio y queda refrescado.
+
+    Atomicidad
+    ----------
+    El lead y su bitácora se escriben en UNA transacción (`commit=False` en
+    las llamadas al CRUD, un solo `db.commit()` al final). Si se hicieran dos
+    commits, una caída en medio dejaría o un lead cambiado sin rastro o un
+    rastro de un cambio que no ocurrió; en una bitácora, cualquiera de las dos
+    la vuelve inservible como evidencia.
+
+    Levanta:
+      * `LeadPermissionError` — el `member` no es el responsable del lead.
+      * `LeadValidationError` — campo no actualizable, o responsable nuevo
+        inexistente / de otra organización.
+    """
+    _assert_can_update(lead, user)
+
+    unknown = set(changes) - crud.UPDATABLE_FIELDS
+    if unknown:
+        raise LeadValidationError(
+            f"Campos no actualizables en un lead: {sorted(unknown)}. "
+            f"Permitidos: {sorted(crud.UPDATABLE_FIELDS)}"
+        )
+
+    # Se calcula el diff ANTES de tocar el lead: después ya no hay valor viejo
+    # que registrar.
+    entries = _diff_to_audit_entries(db, lead, changes)
+
+    if not entries:
+        # PATCH que repite los valores actuales: ni UPDATE ni bitácora. Así
+        # `updated_at` sigue diciendo cuándo cambió el lead por última vez y
+        # no cuándo alguien lo abrió y le dio guardar.
+        return []
+
+    try:
+        crud.update_lead(db, lead, changes, commit=False)
+        audits = [
+            crud.record_audit(
+                db,
+                lead_id=lead.id,
+                user_id=user.id,
+                action=action,
+                old_value=old_value,
+                new_value=new_value,
+                commit=False,
+            )
+            for action, old_value, new_value in entries
+        ]
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(lead)
+    for audit in audits:
+        db.refresh(audit)
+
+    return audits
