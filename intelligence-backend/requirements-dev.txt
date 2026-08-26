@@ -1,0 +1,15 @@
+# Dependencias SOLO de desarrollo/pruebas.
+#
+# Por qué un archivo aparte y no requirements.txt
+# -----------------------------------------------
+# `Dockerfile` y `Procfile` instalan requirements.txt para construir la imagen
+# que corre en Railway. Todo lo que se agregue ahí viaja a producción: más
+# superficie instalada, más tiempo de build y más CVEs que auditar, a cambio
+# de nada — pytest no se ejecuta nunca en el servidor.
+#
+# `httpx` (que TestClient necesita) NO se repite aquí: ya es dependencia de
+# producción en requirements.txt, porque el backend llama a la Graph API con
+# él. Duplicar el pin daría dos lugares donde puede quedar desalineado.
+#
+# Uso:  pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.3,<9.0
