@@ -20,3 +20,8 @@ intelligence-web/.env.local
 .claude/
 CLAUDE.md
 graphify-out/
+
+# Artefactos de trabajo de agentes (ledger, reportes) — no son del proyecto
+.superpowers/
+# Vercel local
+.vercel/
