@@ -79,7 +79,8 @@ Abre http://localhost:8000/docs para probar todo desde el navegador.
 | GET | /clients | JWT | Lista clientes de tu organización |
 | POST | /clients | JWT | Crea un cliente |
 | GET | /clients/{id} | JWT | Detalle de un cliente |
-| POST | /clients/{id}/ad-accounts | JWT | Agrega una cuenta de Meta al cliente |
+| POST | /clients/{id}/ad-accounts | JWT | Registra un activo comercial (hereda el nombre de Meta) |
+| POST | /clients/{id}/ad-accounts/{account_id}/refresh-name | JWT | Vuelve a traer el nombre desde Meta |
 | GET | /users | owner/admin | Lista usuarios de la organización |
 | POST | /users | owner/admin | Crea un usuario |
 | PATCH | /users/{id} | owner/admin | Activa/desactiva o cambia rol |

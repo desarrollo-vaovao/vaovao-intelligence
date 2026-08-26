@@ -6,12 +6,14 @@ import { api } from "@/lib/api";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 
 export default function ReportesPage() {
-  const [clients, setClients] = useState([]);
+  // Los activos comerciales de todos los clientes, en una sola lista plana:
+  // el reporte es siempre de un activo, nunca de un cliente entero.
+  const [accounts, setAccounts] = useState([]);
   const [status, setStatus] = useState(null);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
 
-  const [clientId, setClientId] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [reportType, setReportType] = useState("quincenal");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -23,7 +25,11 @@ export default function ReportesPage() {
     (async () => {
       try {
         const [cl, st] = await Promise.all([api.listClients(), api.reportStatus()]);
-        setClients(cl); setStatus(st);
+        setAccounts(
+          cl.flatMap((c) => c.ad_accounts)
+            .sort((a, b) => a.label.localeCompare(b.label, "es"))
+        );
+        setStatus(st);
       } catch (e) { setErr(e.message); }
     })();
     // Período inicial: la quincena actual
@@ -45,13 +51,13 @@ export default function ReportesPage() {
 
   const ready = status?.generation_available;
   const metaConnected = status?.meta_connected;
-  const incompleto = !clientId || !dateFrom || !dateTo;
+  const incompleto = !accountId || !dateFrom || !dateTo;
 
   async function generate() {
     setErr(""); setInfo(""); setBusy(true);
     try {
       const filename = await api.generateReport({
-        client_id: Number(clientId),
+        ad_account_id: Number(accountId),
         report_type: reportType,
         date_from: dateFrom,
         date_to: dateTo,
@@ -80,7 +86,7 @@ export default function ReportesPage() {
       <div className="page-head">
         <div>
           <h1>Reportes</h1>
-          <p>Genera el reporte de campañas de Meta de un cliente.</p>
+          <p>Genera el reporte de campañas de Meta de un activo comercial.</p>
         </div>
       </div>
 
@@ -103,12 +109,12 @@ export default function ReportesPage() {
 
         <div className="card" style={{ padding: 24 }}>
           <div className="field">
-            <label>Cliente</label>
-            <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
-              <option value="">— Selecciona un cliente —</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
+            <label>Activo comercial</label>
+            <select className="input" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              <option value="">— Selecciona un activo comercial —</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label}
                 </option>
               ))}
             </select>

@@ -1,7 +1,9 @@
 """
 Módulo de Reportes — MOTOR ACTIVO.
 
-Genera el reporte de campañas de Meta en PDF. La generación corre en
+Genera el reporte de campañas de Meta en PDF de UN activo comercial (una
+cuenta publicitaria). Nunca de varios a la vez: los activos de un mismo
+cliente pueden ser marcas sin relación entre sí. La generación corre en
 segundo plano (puede tardar bastante con muchas campañas/anuncios): el
 endpoint de "generate" solo valida y arranca el trabajo, el frontend
 consulta el estado por job_id y descarga el PDF cuando está listo.
@@ -23,11 +25,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core import crypto
 from app.models import User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken
 from app.schemas import (
     ReportStatus,
@@ -38,6 +39,7 @@ from app.schemas import (
     ReportJobStatus,
 )
 from app.services import meta_api, report_builder
+from app.services.meta_tokens import resolve_tokens
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -69,13 +71,13 @@ def _cleanup_jobs() -> None:
 
 
 async def _run_report_job(
-    job_id: str, client: Client, tokens: list[str],
+    job_id: str, account: AdAccount, tokens: list[str],
     date_from, date_to, budget, currency: str,
 ) -> None:
     try:
         async with _generation_semaphore:
             pdf_bytes, filename = await report_builder.build_pdf(
-                client, tokens, date_from, date_to, budget, currency
+                account, tokens, date_from, date_to, budget, currency
             )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
@@ -95,6 +97,18 @@ async def _run_report_job(
 
 
 # ── Helpers ──────────────────────────────────────────────────
+def _get_owned_account(account_id: int, current: User, db: Session) -> AdAccount:
+    """Trae un activo comercial SOLO si pertenece a la organización del usuario."""
+    account = db.scalar(
+        select(AdAccount)
+        .join(Client, AdAccount.client_id == Client.id)
+        .where(AdAccount.id == account_id, Client.org_id == current.org_id)
+    )
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Activo comercial no encontrado")
+    return account
+
+
 def _meta_connected(org: Organization, db: Session) -> bool:
     """Hay al menos un token central de la organización guardado."""
     if not org:
@@ -102,56 +116,6 @@ def _meta_connected(org: Organization, db: Session) -> bool:
     return db.scalar(
         select(MetaCentralToken.id).where(MetaCentralToken.org_id == org.id)
     ) is not None
-
-
-def _resolve_tokens(current: User, db: Session) -> tuple[list[str], str | None]:
-    """
-    Junta TODOS los tokens disponibles para hablar con Meta, en orden de preferencia:
-      1) El Facebook conectado del usuario actual (por usuario, recomendado).
-      2) Los tokens centrales de la organización (uno por portafolio comercial
-         independiente — ej. "Vao Vao", "Menos Pausa" — un solo System User no
-         puede cruzar de un portafolio a otro).
-    Se devuelven todos (si existen) para que el llamador pueda reintentar con el
-    siguiente cuando el primero no tenga acceso a una cuenta puntual — así, una
-    vez que algún token central tiene permiso sobre una cuenta, cualquier
-    persona del equipo puede usarla sin pedir su propio permiso individual en Meta.
-    Devuelve (tokens, motivo_de_error). Si hay al menos un token, motivo es None.
-    """
-    tokens: list[str] = []
-    undecryptable = 0
-
-    fb_conn = db.scalar(
-        select(FacebookConnection).where(FacebookConnection.user_id == current.id)
-    )
-    if fb_conn:
-        token = crypto.decrypt(fb_conn.token_encrypted)
-        if token:
-            tokens.append(token)
-        else:
-            undecryptable += 1
-
-    central_rows = db.scalars(
-        select(MetaCentralToken).where(MetaCentralToken.org_id == current.org_id)
-    ).all()
-    for row in central_rows:
-        token = crypto.decrypt(row.token_encrypted)
-        if token:
-            tokens.append(token)
-        else:
-            undecryptable += 1
-
-    if not tokens:
-        if undecryptable:
-            # Hay credenciales guardadas pero ninguna se pudo descifrar — casi
-            # siempre ENCRYPTION_KEY cambió o no coincide con la del entorno
-            # donde se guardaron. Distinto de "nunca se conectó nada".
-            return [], (
-                f"Hay {undecryptable} credencial(es) de Meta guardadas pero no se "
-                "pudieron leer (ENCRYPTION_KEY no coincide con la que se usó para "
-                "guardarlas). Revisa la variable ENCRYPTION_KEY del servidor."
-            )
-        return [], "No has conectado tu Facebook y no hay tokens centrales (Conexión Meta)."
-    return tokens, None
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -181,20 +145,14 @@ async def generate_report(
     db: Session = Depends(get_db),
 ):
     """
-    Valida todo lo que se puede validar rápido (cliente, fechas, tokens) y
-    arranca la generación del PDF en segundo plano. Devuelve un job_id para
-    consultar el progreso en GET /reports/jobs/{job_id}.
+    Valida todo lo que se puede validar rápido (activo comercial, fechas,
+    tokens) y arranca la generación del PDF en segundo plano. Devuelve un
+    job_id para consultar el progreso en GET /reports/jobs/{job_id}.
     """
     _cleanup_jobs()
 
-    # El cliente debe ser de la organización del usuario
-    client = db.scalar(
-        select(Client)
-        .where(Client.id == data.client_id, Client.org_id == current.org_id)
-        .options(selectinload(Client.ad_accounts))
-    )
-    if not client:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cliente no encontrado")
+    # El activo comercial debe ser de la organización del usuario
+    account = _get_owned_account(data.ad_account_id, current, db)
 
     if data.date_from > data.date_to:
         raise HTTPException(
@@ -202,7 +160,7 @@ async def generate_report(
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
 
-    tokens, error = _resolve_tokens(current, db)
+    tokens, error = resolve_tokens(current, db)
     if not tokens:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
@@ -222,7 +180,7 @@ async def generate_report(
         "created_at": time.monotonic(),
     }
     asyncio.create_task(_run_report_job(
-        job_id, client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
+        job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value
     ))
     return ReportJobCreated(job_id=job_id)
 
@@ -302,15 +260,9 @@ async def check_access(
     Verifica en vivo si podemos leer una cuenta publicitaria específica.
     Usa el Facebook del usuario si está conectado; si no, el token central.
     """
-    account = db.scalar(
-        select(AdAccount)
-        .join(Client, AdAccount.client_id == Client.id)
-        .where(AdAccount.id == data.account_id, Client.org_id == current.org_id)
-    )
-    if not account:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cuenta no encontrada")
+    account = _get_owned_account(data.account_id, current, db)
 
-    tokens, error = _resolve_tokens(current, db)
+    tokens, error = resolve_tokens(current, db)
     if not tokens:
         return CheckAccessResult(ok=False, detail=error)
 

@@ -1,19 +1,17 @@
 """
 report_builder — une las piezas del motor de reportes.
 
-Toma un cliente de la base, sus cuentas publicitarias y un rango de fechas;
-pide los datos a Meta (meta_api) y los arma en la estructura que espera
-pdf_generator. Es el "pegamento" entre traer datos y dibujarlos.
+Toma un activo comercial de la base y un rango de fechas; pide los datos a
+Meta (meta_api) y los arma en la estructura que espera pdf_generator. Es el
+"pegamento" entre traer datos y dibujarlos.
 
-Maneja los dos casos:
-- Cliente con UNA cuenta      → reporte simple (una página)
-- Cliente multi-estación      → una página por cuenta
+Un reporte es siempre de UN activo comercial: los activos de un mismo cliente
+pueden ser marcas sin relación entre sí, y mezclarlas en un PDF no sirve.
 """
-import asyncio
 from datetime import date
 
-from app.models import Client
-from app.services import meta_api, pdf_generator
+from app.models import AdAccount
+from app.services import meta_api, pdf_generator, perf
 
 _MESES = ["ene", "feb", "mar", "abr", "may", "jun",
           "jul", "ago", "sep", "oct", "nov", "dic"]
@@ -29,73 +27,45 @@ def format_period(date_from: date, date_to: date) -> str:
             f"{date_to.day} {_MESES[date_to.month - 1]} {date_to.year}")
 
 
-async def build_report_data(client: Client, tokens: list[str], date_from: date, date_to: date,
+async def build_report_data(account: AdAccount, tokens: list[str], date_from: date, date_to: date,
                             budget: float | None = None, currency: str = "USD") -> dict:
     """
-    Construye el diccionario que pdf_generator sabe dibujar.
+    Construye el diccionario que pdf_generator sabe dibujar, para UN activo
+    comercial.
     `tokens` es una lista de candidatos en orden de preferencia (p. ej. el
     Facebook personal del usuario y, de respaldo, el token central de la
-    organización): si el primero no tiene acceso a una cuenta puntual, se
-    reintenta con el siguiente antes de fallar.
-    Lanza meta_api.MetaApiError si ningún token puede leer alguna cuenta.
+    organización): si el primero no tiene acceso a la cuenta, se reintenta con
+    el siguiente antes de fallar.
+    Lanza meta_api.MetaApiError si ningún token puede leer la cuenta.
     """
-    accounts = list(client.ad_accounts)
-    if not accounts:
-        raise ValueError("El cliente no tiene cuentas publicitarias registradas.")
-
-    d_from = date_from.isoformat()
-    d_to = date_to.isoformat()
-    period = format_period(date_from, date_to)
-    currency_symbol = CURRENCY_SYMBOLS.get(currency, "$")
-
-    # ── Multi-estación: una página por cuenta ──
-    if len(accounts) > 1:
-        # Todas las cuentas se piden en paralelo, no una por una.
-        results = await asyncio.gather(*(
-            meta_api.get_account_data_with_fallback(tokens, acc.meta_ad_account_id, d_from, d_to)
-            for acc in accounts
-        ))
-        # El presupuesto se reparte en partes iguales si viene uno global
-        per_station = (budget / len(accounts)) if budget else None
-        stations = [
-            {
-                "station_label": acc.label,
-                "campaigns": data["campaigns"],
-                "total_spend": data["total_spend"],
-                "budget": per_station,
-            }
-            for acc, data in zip(accounts, results)
-        ]
-        return {
-            "client_name": client.name,
-            "period": period,
-            "type": "multi-station",
-            "stations": stations,
-            "currency_symbol": currency_symbol,
-        }
-
-    # ── Cuenta única ──
-    acc = accounts[0]
-    data = await meta_api.get_account_data_with_fallback(tokens, acc.meta_ad_account_id, d_from, d_to)
+    data = await meta_api.get_account_data_with_fallback(
+        tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat()
+    )
     return {
-        "client_name": client.name,
-        "period": period,
-        "type": "single",
+        "client_name": account.label,
+        "period": format_period(date_from, date_to),
         "campaigns": data["campaigns"],
         "total_spend": data["total_spend"],
         "budget": budget,
-        "currency_symbol": currency_symbol,
+        "currency_symbol": CURRENCY_SYMBOLS.get(currency, "$"),
     }
 
 
-async def build_pdf(client: Client, tokens: list[str], date_from: date, date_to: date,
+async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date_to: date,
                     budget: float | None = None, currency: str = "USD") -> tuple[bytes, str]:
     """
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
-    """
-    report_data = await build_report_data(client, tokens, date_from, date_to, budget, currency)
-    pdf_bytes = await pdf_generator.generate_pdf(report_data)
 
-    slug = "".join(ch if ch.isalnum() else "-" for ch in client.name.lower()).strip("-")
+    El total que se registra aquí es el techo de lo que puede sentir el
+    usuario del lado del servidor: si la suma de las fases (ver app/services/
+    perf.py) no lo explica, el tiempo que falta está en el sondeo del
+    frontend o en la red, no acá.
+    """
+    async with perf.aphase(f"REPORTE · total ({account.label})") as info:
+        report_data = await build_report_data(account, tokens, date_from, date_to, budget, currency)
+        info["campañas"] = len(report_data["campaigns"])
+        pdf_bytes = await pdf_generator.generate_pdf(report_data)
+
+    slug = "".join(ch if ch.isalnum() else "-" for ch in account.label.lower()).strip("-")
     filename = f"reporte-{slug}-{date_from.isoformat()}-a-{date_to.isoformat()}.pdf"
     return pdf_bytes, filename

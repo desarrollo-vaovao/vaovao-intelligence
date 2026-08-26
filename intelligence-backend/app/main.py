@@ -21,7 +21,7 @@ from app.api.routes import (
     facebook,
     leads,
 )
-from app.services import browser_pool
+from app.services import assets, browser_pool
 
 # Importa todos los modelos de una vez. Ya no es para `create_all` (ver el
 # lifespan), pero sigue haciendo falta: las `relationship()` se declaran con el
@@ -35,7 +35,9 @@ async def lifespan(app: FastAPI):
     """
     Al arrancar: levanta el navegador compartido para generar PDFs
     (ver app/services/browser_pool.py — evita lanzar un Chromium nuevo por
-    cada reporte).
+    cada reporte) y precarga la tipografía del reporte (ver
+    app/services/assets.py — así ni el primer reporte tras un despliegue
+    espera a que baje Poppins).
 
     Aquí ya NO se crean tablas
     --------------------------
@@ -51,12 +53,12 @@ async def lifespan(app: FastAPI):
     en silencio un esquema que ninguna migración describe, y que el siguiente
     `alembic upgrade` se encuentre una base en un estado que no esperaba.
 
-    A cambio, una base nueva (un desarrollador que empieza, o los tests
-    cuando existan) necesita `alembic upgrade head` una vez antes de arrancar.
-    Es un comando más en el README contra una clase entera de derivas
-    silenciosas: vale la pena.
+    A cambio, una base nueva (un desarrollador que empieza, o los tests)
+    necesita `alembic upgrade head` una vez antes de arrancar. Es un comando
+    más en el README contra una clase entera de derivas silenciosas.
     """
     await browser_pool.start()
+    await assets.warm_font()
     yield
     await browser_pool.stop()
 

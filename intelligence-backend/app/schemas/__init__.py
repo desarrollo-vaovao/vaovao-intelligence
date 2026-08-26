@@ -7,7 +7,7 @@ from datetime import datetime, date
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
-from app.models import UserRole, ClientType
+from app.models import UserRole
 
 
 # ── Auth ──────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ class ReportCurrency(str, enum.Enum):
 
 
 class ReportRequest(BaseModel):
-    client_id: int
+    ad_account_id: int  # id del activo comercial en nuestra base
     report_type: ReportType = ReportType.quincenal
     date_from: date
     date_to: date
@@ -124,11 +124,14 @@ class ReportJobStatus(BaseModel):
 
 # ── Ad Account ────────────────────────────────────────────────
 class AdAccountCreate(BaseModel):
-    label: str = Field(min_length=1, max_length=80)
+    """
+    El nombre (label) NO se pide: se hereda del nombre real de la cuenta en
+    Meta al registrarla. Ver clients.add_ad_account.
+    """
     meta_ad_account_id: str = Field(min_length=3, max_length=60)
     recipient_emails: list[EmailStr] = Field(default_factory=list)
 
-    @field_validator("label", "meta_ad_account_id")
+    @field_validator("meta_ad_account_id")
     @classmethod
     def _strip(cls, v: str) -> str:
         # Copiar/pegar desde Excel/Sheets suele meter tabs o espacios de sobra,
@@ -137,12 +140,11 @@ class AdAccountCreate(BaseModel):
 
 
 class AdAccountUpdate(BaseModel):
-    """Actualización parcial de una cuenta publicitaria."""
-    label: str | None = Field(default=None, min_length=1, max_length=80)
+    """Actualización parcial de una cuenta publicitaria (label es heredado)."""
     meta_ad_account_id: str | None = Field(default=None, min_length=3, max_length=60)
     recipient_emails: list[EmailStr] | None = None
 
-    @field_validator("label", "meta_ad_account_id")
+    @field_validator("meta_ad_account_id")
     @classmethod
     def _strip(cls, v: str | None) -> str | None:
         return v.strip() if v is not None else v
@@ -159,19 +161,16 @@ class AdAccountOut(BaseModel):
 # ── Client ────────────────────────────────────────────────────
 class ClientCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
-    type: ClientType = ClientType.single
 
 
 class ClientUpdate(BaseModel):
     """Actualización parcial de un cliente."""
     name: str | None = Field(default=None, min_length=2, max_length=160)
-    type: ClientType | None = None
 
 
 class ClientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
-    type: ClientType
     created_at: datetime
     ad_accounts: list[AdAccountOut] = Field(default_factory=list)
