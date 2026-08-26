@@ -15,10 +15,11 @@ Flujo:
 """
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+import logging
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,8 +28,11 @@ from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core import crypto
+from app.core.ratelimit import limiter, LIMITS
 from app.models import User, FacebookConnection
 from app.services import meta_api
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/facebook", tags=["facebook"])
 
@@ -80,7 +84,9 @@ def facebook_login(current: User = Depends(get_current_user)):
 
 
 @router.get("/callback")
+@limiter.limit(LIMITS["facebook_callback"])
 def facebook_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -91,23 +97,23 @@ def facebook_callback(
     front = settings.FRONTEND_URL.rstrip("/") + "/conexion"
 
     if error:
-        print(f"[FB callback] Meta devolvió error: {error} — {error_description}")
+        logger.warning(f"FB callback error from Meta: {error}", extra={"error_description": error_description})
         return RedirectResponse(f"{front}?fb=error")
     if not code or not state:
-        print(f"[FB callback] Faltan parámetros. code={bool(code)} state={bool(state)}")
+        logger.warning(f"FB callback missing parameters", extra={"code": bool(code), "state": bool(state)})
         return RedirectResponse(f"{front}?fb=error")
 
     user_id = _read_state(state)
     if not user_id:
-        print("[FB callback] state inválido o expirado (JWT no verifica)")
+        logger.warning("FB callback state invalid or expired (JWT verification failed)")
         return RedirectResponse(f"{front}?fb=error")
     user = db.get(User, user_id)
     if not user:
-        print(f"[FB callback] Usuario {user_id} del state no existe en la base")
+        logger.warning(f"FB callback user not found", extra={"user_id": user_id})
         return RedirectResponse(f"{front}?fb=error")
 
     if not settings.FB_APP_ID or not settings.FB_APP_SECRET:
-        print("[FB callback] Falta FB_APP_ID / FB_APP_SECRET en .env")
+        logger.error("FB callback missing configuration: FB_APP_ID or FB_APP_SECRET")
         return RedirectResponse(f"{front}?fb=error")
 
     try:
@@ -121,7 +127,7 @@ def facebook_callback(
             })
             short = r.json()
             if r.status_code != 200 or "access_token" not in short:
-                print(f"[FB callback] Meta rechazó el code. status={r.status_code} body={short}")
+                logger.warning(f"FB callback: Meta rejected code", extra={"status": r.status_code})
                 return RedirectResponse(f"{front}?fb=error")
 
             # 2) corto → token de larga duración (~60 días)
@@ -138,10 +144,10 @@ def facebook_callback(
             # 3) datos del usuario de Facebook (para mostrar)
             me = client.get(f"{FB}/me", params={"fields": "id,name", "access_token": token}).json()
             if "error" in me:
-                print(f"[FB callback] /me devolvió error: {me['error']}")
+                logger.warning("FB callback: /me endpoint returned error", extra={"user_id": user.id})
                 return RedirectResponse(f"{front}?fb=error")
     except httpx.HTTPError as e:
-        print(f"[FB callback] Error de red hablando con Meta: {e}")
+        logger.warning(f"FB callback: network error calling Meta API", extra={"error": str(e), "user_id": user.id})
         return RedirectResponse(f"{front}?fb=error")
 
     expires_at = (
@@ -159,7 +165,7 @@ def facebook_callback(
     conn.expires_at = expires_at
     db.commit()
 
-    print(f"[FB callback] ✅ Facebook conectado para user_id={user.id} como '{conn.fb_name}'")
+    logger.info(f"FB callback: user connected", extra={"user_id": user.id, "fb_name": conn.fb_name})
     return RedirectResponse(f"{front}?fb=ok")
 
 @router.get("/status")

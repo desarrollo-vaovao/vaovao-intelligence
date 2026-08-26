@@ -3,7 +3,7 @@ Rutas de autenticación: registro inicial y login.
 """
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token
+from app.core.ratelimit import limiter, LIMITS
 from app.models import Organization, User, UserRole
 from app.schemas import RegisterRequest, Token, UserOut
 
@@ -23,7 +24,8 @@ def _slugify(name: str) -> str:
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit(LIMITS["auth_register"])
+def register(request: Request, data: RegisterRequest, db: Session = Depends(get_db)):
     """
     Bootstrap de una organización: crea la org y su primer usuario (dueño).
     Pensado para arrancar VaoVao. En producto multi-agencia, este es el alta de cada agencia.
@@ -57,7 +59,8 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit(LIMITS["auth_login"])
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """
     Login estándar OAuth2: 'username' es el email, 'password' la contraseña.
     Devuelve un JWT para usar como 'Authorization: Bearer <token>'.
