@@ -13,3 +13,7 @@ httpx>=0.27
 playwright>=1.40
 tzdata>=2024.1
 slowapi>=0.1.9
+
+# Las dependencias de pruebas (pytest) NO viven aquí: van en
+# requirements-dev.txt, para que no viajen a la imagen de producción.
+# Ver el encabezado de ese archivo.
