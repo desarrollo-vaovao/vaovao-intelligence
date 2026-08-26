@@ -309,7 +309,34 @@ def _diff_to_audit_entries(
 
 
 # ── A. Ingesta del webhook ───────────────────────────────────────
-def _refresh_from_meta(db: Session, lead: Lead, payload: LeadSyncPayload) -> Lead:
+def _pending_orphan(db: Session, leadgen_id: str) -> OrphanLead | None:
+    """El huérfano PENDIENTE de ese `leadgen_id`, si es que quedó alguno.
+
+    Existe para un caso concreto: el lead llegó cuando su página no estaba
+    configurada (quedó huérfano), alguien registró la `ClientPage` y DESPUÉS
+    Meta reentregó el mismo `leadgen_id`. La reentrega entra por el camino
+    normal y crea —o refresca— el `Lead` real, pero la fila huérfana se
+    quedaba con `resolved_at IS NULL` para siempre, inflando el contador de
+    pendientes de `/leads/status` sin que hubiera nada pendiente de verdad.
+
+    Se filtra por `resolved_at IS NULL` para no volver a tocar —ni moverle la
+    fecha a— un huérfano que ya cerró la reconciliación.
+    """
+    return db.scalar(
+        select(OrphanLead).where(
+            OrphanLead.leadgen_id == leadgen_id,
+            OrphanLead.resolved_at.is_(None),
+        )
+    )
+
+
+def _refresh_from_meta(
+    db: Session,
+    lead: Lead,
+    payload: LeadSyncPayload,
+    *,
+    resolve_orphan: OrphanLead | None = None,
+) -> Lead:
     """Reentrega de un lead ya conocido: refresca SÓLO lo que viene de Meta.
 
     Meta reentrega el mismo `leadgen_id` cuando no recibe un 200 a tiempo, y
@@ -321,8 +348,15 @@ def _refresh_from_meta(db: Session, lead: Lead, payload: LeadSyncPayload) -> Lea
 
     Tampoco se sobrescribe con vacío: un payload sin `form_data` no puede
     borrar los datos de contacto que sí llegaron la primera vez.
+
+    `resolve_orphan`, si viene, se cierra en el MISMO commit que el refresco
+    —y se commitea aunque no haya cambiado ningún campo, que es el caso
+    normal de una reentrega—. Ver `_pending_orphan`.
     """
     changed = False
+    if resolve_orphan is not None:
+        resolve_orphan.resolved_at = _now()
+        changed = True
 
     if payload.form_data and payload.form_data != lead.form_data:
         lead.form_data = payload.form_data
@@ -475,6 +509,10 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
     en su propia tabla. Si esa página no está configurada, el lead NO se tira:
     va a `orphan_leads` y el resultado es `orphaned` (§14.1 del spec).
 
+    Si ese lead ya había quedado huérfano y la página se configuró antes de la
+    reentrega de Meta, el huérfano pendiente se marca resuelto en el mismo
+    commit que el `Lead` real. Ver `_pending_orphan`.
+
     Deduplicación
     -------------
     Obligatoria, no opcional — Meta reentrega. `leadgen_id` es único global y
@@ -497,7 +535,13 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
     existing = crud.get_lead_by_leadgen_id(db, payload.leadgen_id)
     if existing is not None:
         return IngestResult(
-            IngestOutcome.updated, lead=_refresh_from_meta(db, existing, payload)
+            IngestOutcome.updated,
+            lead=_refresh_from_meta(
+                db,
+                existing,
+                payload,
+                resolve_orphan=_pending_orphan(db, payload.leadgen_id),
+            ),
         )
 
     page = db.scalar(select(ClientPage).where(ClientPage.page_id == payload.page_id))
@@ -513,6 +557,7 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
             form_id=payload.form_id,
             campaign_name=payload.campaign_name,
             status=_raw(payload.status),
+            resolve_orphan=_pending_orphan(db, payload.leadgen_id),
         )
     except IntegrityError:
         # Carrera con otra entrega del mismo leadgen_id: el UNIQUE hizo su
@@ -521,7 +566,13 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
         if existing is None:
             raise  # El UNIQUE que reventó era otro; no lo tapamos.
         return IngestResult(
-            IngestOutcome.updated, lead=_refresh_from_meta(db, existing, payload)
+            IngestOutcome.updated,
+            lead=_refresh_from_meta(
+                db,
+                existing,
+                payload,
+                resolve_orphan=_pending_orphan(db, payload.leadgen_id),
+            ),
         )
 
     return IngestResult(IngestOutcome.created, lead=lead)
