@@ -165,12 +165,18 @@ class LeadAudit(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
-    # NULL significa "lo hizo el sistema": la ingesta por webhook no actúa en
-    # nombre de ningún usuario, y sin esto la fila `created` de un lead nacido
-    # de Meta no se podría escribir. Al pintar la bitácora, un user_id nulo se
-    # muestra como "Sistema".
+    # NULL tiene DOS significados, y los dos se pintan igual ("Sistema"):
+    #   1. Lo hizo el sistema: la ingesta por webhook no actúa en nombre de
+    #      ningún usuario, y sin esto la fila `created` de un lead nacido de
+    #      Meta no se podría escribir.
+    #   2. Lo hizo un usuario que después se borró: `SET NULL` degrada la fila
+    #      a "atribuida al sistema" en vez de borrarla.
+    # `SET NULL` y no `CASCADE`: una bitácora que desaparece cuando se borra a
+    # quien la escribió no es una bitácora. Es el mismo criterio que
+    # `Lead.assigned_to_id`, y `leads_service._describe_user` ya contempla al
+    # usuario inexistente.
     user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # created | status_changed | assigned | notes_added | notes_changed
     action: Mapped[str] = mapped_column(String(32))
