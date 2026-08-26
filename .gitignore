@@ -9,6 +9,10 @@ venv/
 # Backend
 intelligence-backend/.env
 intelligence-backend/dev.db
+# Cualquier base local o de pruebas: nunca deben llegar al repo
+*.db
+*.sqlite
+*.sqlite3
 
 # Frontend
 node_modules/

@@ -5,7 +5,9 @@ Jerarquía:
     Organization (el "tenant" — VaoVao, o cada agencia si algún día es producto)
       └── User      (las personas que entran a la plataforma, con rol)
       └── Client    (los clientes de la agencia — reemplaza el clients.js)
-            └── AdAccount  (cuentas publicitarias de Meta; una o varias por cliente)
+            └── AdAccount   (cuentas publicitarias de Meta; una o varias por cliente)
+            └── ClientPage  (páginas de Facebook; enrutan el lead entrante a su cliente)
+            └── Lead        (leads de los formularios de Meta; su bitácora es LeadAudit)
 
 Todo cuelga de Organization → así el aislamiento por tenant es natural:
 cada query filtra por org_id y nadie ve datos de otra organización.
@@ -13,7 +15,7 @@ cada query filtra por org_id y nadie ve datos de otra organización.
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON
+from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -48,6 +50,7 @@ class Organization(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    leads: Mapped[list["Lead"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     meta_central_tokens: Mapped[list["MetaCentralToken"]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
     )
@@ -81,6 +84,12 @@ class Client(Base):
     ad_accounts: Mapped[list["AdAccount"]] = relationship(
         back_populates="client", cascade="all, delete-orphan"
     )
+    pages: Mapped[list["ClientPage"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
+    leads: Mapped[list["Lead"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
 
 
 class AdAccount(Base):
@@ -95,6 +104,117 @@ class AdAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     client: Mapped["Client"] = relationship(back_populates="ad_accounts")
+
+
+class ClientPage(Base):
+    """
+    Página de Facebook de un cliente — la llave de enrutamiento de los leads:
+    el webhook de Meta trae un page_id y por él sabemos de qué cliente es el lead.
+    Un cliente puede tener varias páginas, igual que varias cuentas publicitarias.
+    page_id es único a nivel global: una página pertenece a un solo cliente.
+    """
+    __tablename__ = "client_pages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    page_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # ej. "102938475610293"
+    page_name: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    client: Mapped["Client"] = relationship(back_populates="pages")
+
+
+class Lead(Base):
+    """Lead generado desde formularios de captura (LeadGen o forms custom)."""
+    __tablename__ = "leads"
+    __table_args__ = (
+        Index("idx_lead_org_client_status", "org_id", "client_id", "status"),
+        Index("idx_lead_org_assigned", "org_id", "assigned_to_id"),
+        Index("idx_lead_received_at", "received_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    form_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Etapa del pipeline (las 5 columnas del Kanban, más el cierre negativo):
+    #     nuevo → contactado → calificado → propuesta → ganado
+    #                                                  → perdido
+    # `perdido` es terminal y se alcanza desde cualquier etapa.
+    # String y no Enum a propósito: agregar una etapa es un cambio de código,
+    # no un ALTER TYPE en Postgres.
+    status: Mapped[str] = mapped_column(String(32), default="nuevo")
+    assigned_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="leads")
+    client: Mapped["Client"] = relationship(back_populates="leads")
+    assigned_to: Mapped["User | None"] = relationship()
+
+
+class LeadAudit(Base):
+    """Auditoría de cambios en leads."""
+    __tablename__ = "lead_audits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    # NULL tiene DOS significados, y los dos se pintan igual ("Sistema"):
+    #   1. Lo hizo el sistema: la ingesta por webhook no actúa en nombre de
+    #      ningún usuario, y sin esto la fila `created` de un lead nacido de
+    #      Meta no se podría escribir.
+    #   2. Lo hizo un usuario que después se borró: `SET NULL` degrada la fila
+    #      a "atribuida al sistema" en vez de borrarla.
+    # `SET NULL` y no `CASCADE`: una bitácora que desaparece cuando se borra a
+    # quien la escribió no es una bitácora. Es el mismo criterio que
+    # `Lead.assigned_to_id`, y `leads_service._describe_user` ya contempla al
+    # usuario inexistente.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # created | status_changed | assigned | notes_added | notes_changed
+    action: Mapped[str] = mapped_column(String(32))
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str] = mapped_column(Text)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    lead: Mapped["Lead"] = relationship()
+    user: Mapped["User | None"] = relationship()
+
+
+class OrphanLead(Base):
+    """
+    Lead que llegó de una página de Facebook que nadie configuró todavía.
+
+    No se puede atribuir a un cliente (no hay `ClientPage` con ese `page_id`,
+    así que no hay `client_id` ni `org_id` que ponerle), pero tampoco se tira:
+    descartarlo con una línea de log es perder un lead real —plata— por un
+    error de configuración que nadie va a notar. Se guarda aquí sin atribuir y,
+    cuando alguien registre esa página, `reconcile_orphans()` lo convierte en
+    un `Lead` normal y le marca `resolved_at`.
+
+    `leadgen_id` es único también aquí, y la deduplicación mira las DOS tablas:
+    un `leadgen_id` que ya existe como `Lead` no vuelve a entrar como huérfano.
+    Por eso esta tabla no tiene org_id: es justo el dato que falta.
+    """
+    __tablename__ = "orphan_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    page_id: Mapped[str] = mapped_column(String(64), index=True)
+    form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    form_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Se llena cuando el huérfano ya fue convertido en Lead real.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class FacebookConnection(Base):
     """Conexión de Facebook de un usuario (una por usuario). Token cifrado."""
