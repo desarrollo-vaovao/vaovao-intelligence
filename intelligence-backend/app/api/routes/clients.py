@@ -7,12 +7,12 @@ OJO — el aislamiento multi-tenant está en CADA query:
 siempre se filtra por current.org_id. Un usuario jamás toca datos de otra organización.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
-from app.models import User, Client, AdAccount, UserRole
+from app.models import User, Client, AdAccount, Lead, UserRole
 from app.schemas import (
     ClientCreate,
     ClientUpdate,
@@ -108,8 +108,46 @@ def delete_client(
     current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
     db: Session = Depends(get_db),
 ):
+    """Borra un cliente, salvo que todavía tenga leads.
+
+    Qué se lleva por delante el borrado
+    -----------------------------------
+    Todo lo que cuelga de `clients.id` con `ondelete="CASCADE"`: sus
+    `ad_accounts`, sus `client_pages` (el enrutamiento de páginas de Facebook)
+    y —esto es lo grave— sus `leads`, y con cada lead su `lead_audits`.
+
+    Por eso se rechaza si hay leads: el historial comercial de un cliente no
+    se puede reponer, y perderlo por un DELETE mal apuntado no es aceptable.
+    Quien de verdad quiera borrarlo tiene que exportar antes.
+
+    Qué NO bloquea, y por qué:
+    - `client_pages`: es configuración de enrutamiento. Si se pierde, se
+      recupera volviendo a dar de alta la página con el mismo `page_id`.
+    - `orphan_leads`: no cuelgan de `clients` —no tienen `client_id` ni
+      `org_id`, que es justo el dato que les falta—, así que este borrado ni
+      los toca. Siguen pendientes y se reconcilian cuando su página se
+      registre de nuevo.
+    """
     client = _get_owned_client(client_id, current, db)
-    db.delete(client)  # cascade elimina también sus ad_accounts
+
+    # El filtro por org_id es redundante (el cliente ya se validó como propio)
+    # pero se deja explícito: en este archivo TODA query lleva su tenant.
+    leads_count = db.scalar(
+        select(func.count())
+        .select_from(Lead)
+        .where(Lead.client_id == client.id, Lead.org_id == current.org_id)
+    ) or 0
+    if leads_count:
+        plural = "lead" if leads_count == 1 else "leads"
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"No puedes borrar este cliente: tiene {leads_count} {plural} "
+            "y borrarlo eliminaría todo su historial, incluida la bitácora. "
+            "Exporta los leads a CSV antes de borrar el cliente.",
+        )
+
+    # cascade elimina también sus ad_accounts y sus client_pages
+    db.delete(client)
     db.commit()
 
 
