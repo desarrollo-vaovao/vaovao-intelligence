@@ -5,11 +5,14 @@ conexión con Meta (token central + OAuth por usuario) y reportes.
 """
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.exceptions import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.database import Base, engine
+from app.core.ratelimit import limiter
 from app.api.routes import (
     auth,
     clients,
@@ -48,17 +51,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # CORS: en desarrollo permite el frontend local; en producción, los orígenes de CORS_ORIGINS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept"],
     # Sin esto, el navegador no deja leer Content-Disposition en cross-origin
     # (frontend en Vercel, backend en Railway) y el nombre del PDF se pierde.
     expose_headers=["Content-Disposition"],
 )
+
+# Security headers
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if settings.ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 # Rutas de la API
 app.include_router(auth.router)
@@ -71,10 +89,10 @@ app.include_router(facebook.router)
 
 @app.get("/health", tags=["health"])
 def health():
-    """Comprobación rápida de que el servicio está vivo."""
-    return {"status": "ok", "app": settings.APP_NAME, "env": settings.ENVIRONMENT}
+    """Comprobación rápida de que el servicio está vivo. No expone detalles internos."""
+    return {"status": "ok"}
 
 
 @app.get("/", tags=["health"])
 def root():
-    return {"message": f"{settings.APP_NAME} API — ver /docs"}
+    return {"message": "VaoVao Intelligence API"}
