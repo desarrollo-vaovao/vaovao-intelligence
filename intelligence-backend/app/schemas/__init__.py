@@ -99,6 +99,7 @@ class ReportRequest(BaseModel):
     date_to: date
     budget: float | None = None
     currency: ReportCurrency = ReportCurrency.USD
+    country_code: str | None = None  # ej. "GT" para Guatemala, "US" para USA; None = todos
 
 
 class CheckAccessRequest(BaseModel):

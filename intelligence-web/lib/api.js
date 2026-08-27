@@ -121,4 +121,4 @@ export const api = {
   fbDisconnect: () => request("/auth/facebook/", { method: "DELETE" }),
 };
 
-export { getToken };
+export { getToken, request };

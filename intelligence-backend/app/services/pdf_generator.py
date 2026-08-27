@@ -219,11 +219,13 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
     campaigns = report_data.get("campaigns", [])
     total_spend = report_data.get("total_spend", 0)
     budget = report_data.get("budget")
+    country_code = report_data.get("country_code")
 
     pct = min(round((total_spend / budget) * 100), 100) if budget else None
 
     pleca_label = "Reporte de campañas — Meta Ads"
-    pleca_sub = "Quincenal"
+    country_suffix = f" · {country_code}" if country_code else ""
+    pleca_sub = f"Quincenal{country_suffix}"
 
     budget_block = ""
     if budget:

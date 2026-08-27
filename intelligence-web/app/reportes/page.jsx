@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Shell from "@/lib/Shell";
-import { api } from "@/lib/api";
+import { api, request } from "@/lib/api";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 
 export default function ReportesPage() {
@@ -19,6 +19,9 @@ export default function ReportesPage() {
   const [dateTo, setDateTo] = useState("");
   const [budget, setBudget] = useState("");
   const [currency, setCurrency] = useState("USD");
+  const [countryCode, setCountryCode] = useState("");
+  const [countries, setCountries] = useState([]);
+  const [loadingCountries, setLoadingCountries] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -36,6 +39,25 @@ export default function ReportesPage() {
     const q = periodoQuincenal(0);
     setDateFrom(q.from); setDateTo(q.to);
   }, []);
+
+  // Al cambiar el activo comercial, cargar los países disponibles
+  async function cambiarActivo(id) {
+    setAccountId(id);
+    setCountryCode("");
+    setCountries([]);
+    if (!id) return;
+
+    setLoadingCountries(true);
+    try {
+      const response = await request(`/reports/countries/${id}`);
+      setCountries(response.countries || []);
+    } catch (e) {
+      console.error("Error loading countries:", e);
+      setCountries([]);
+    } finally {
+      setLoadingCountries(false);
+    }
+  }
 
   // Al cambiar el tipo de reporte, se llenan las fechas solas
   function cambiarTipo(tipo) {
@@ -63,6 +85,7 @@ export default function ReportesPage() {
         date_to: dateTo,
         budget: budget ? Number(budget) : null,
         currency,
+        country_code: countryCode || null,
       });
       setInfo(`Reporte descargado: ${filename}`);
     } catch (e) {
@@ -110,7 +133,7 @@ export default function ReportesPage() {
         <div className="card" style={{ padding: 24 }}>
           <div className="field">
             <label>Activo comercial</label>
-            <select className="input" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            <select className="input" value={accountId} onChange={(e) => cambiarActivo(e.target.value)}>
               <option value="">— Selecciona un activo comercial —</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -119,6 +142,25 @@ export default function ReportesPage() {
               ))}
             </select>
           </div>
+
+          {accountId && countries.length > 0 && (
+            <div className="field">
+              <label>País (opcional)</label>
+              <select
+                className="input"
+                value={countryCode}
+                onChange={(e) => setCountryCode(e.target.value)}
+                disabled={loadingCountries}
+              >
+                <option value="">— Todos los países —</option>
+                {countries.map((country) => (
+                  <option key={country} value={country}>
+                    {country}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="field">
             <label>Tipo de reporte</label>

@@ -275,6 +275,17 @@ def _rank_by_insights(insights: dict) -> float:
     return 0.0
 
 
+def _extract_countries_from_targeting(targeting: dict | None) -> list[str]:
+    """Extrae la lista de códigos de país del objeto de targeting de un anuncio."""
+    if not targeting:
+        return []
+    geo_locations = targeting.get("geo_locations") or {}
+    countries = geo_locations.get("countries")
+    if isinstance(countries, list):
+        return sorted(countries)
+    return []
+
+
 async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
                                          date_from: str, date_to: str) -> dict:
     """
@@ -376,7 +387,7 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             ))),
             perf.timed("Meta · listado de anuncios", _labeled("Listado de anuncios", _get_all(
                 client, f"{ad_account_id}/ads", token, {
-                    "fields": "id,name,campaign_id,creative{thumbnail_url,image_url}",
+                    "fields": "id,name,campaign_id,creative{thumbnail_url,image_url},targeting",
                     "limit": _PAGE_SIZE,
                 },
             ))),
@@ -410,6 +421,7 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
                 "name": ad.get("name"),
                 "image_url": creative.get("thumbnail_url") or creative.get("image_url"),
                 "insights": insights_by_ad.get(ad["id"], {}),
+                "countries": _extract_countries_from_targeting(ad.get("targeting")),
             })
         campaign_ads.sort(key=lambda a: _rank_by_insights(a["insights"]), reverse=True)
 

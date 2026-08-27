@@ -72,12 +72,12 @@ def _cleanup_jobs() -> None:
 
 async def _run_report_job(
     job_id: str, account: AdAccount, tokens: list[str],
-    date_from, date_to, budget, currency: str,
+    date_from, date_to, budget, currency: str, country_code: str | None = None,
 ) -> None:
     try:
         async with _generation_semaphore:
             pdf_bytes, filename = await report_builder.build_pdf(
-                account, tokens, date_from, date_to, budget, currency
+                account, tokens, date_from, date_to, budget, currency, country_code
             )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
@@ -180,7 +180,7 @@ async def generate_report(
         "created_at": time.monotonic(),
     }
     asyncio.create_task(_run_report_job(
-        job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value
+        job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value, data.country_code
     ))
     return ReportJobCreated(job_id=job_id)
 
@@ -268,3 +268,42 @@ async def check_access(
 
     ok, detail = await meta_api.check_account_access_with_fallback(tokens, account.meta_ad_account_id)
     return CheckAccessResult(ok=ok, detail=detail)
+
+
+@router.get("/countries/{account_id}")
+async def get_available_countries(
+    account_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Devuelve la lista de países únicos en los que se han pautado anuncios
+    para una cuenta publicitaria. Útil para mostrar un selector en el frontend.
+    Usa el último mes como rango de fechas por defecto.
+    """
+    from datetime import date, timedelta
+
+    account = _get_owned_account(account_id, current, db)
+
+    tokens, error = resolve_tokens(current, db)
+    if not tokens:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
+
+    # Rango de fechas: últimos 30 días
+    today = date.today()
+    thirty_days_ago = today - timedelta(days=30)
+
+    try:
+        data = await meta_api.get_account_data_with_fallback(
+            tokens, account.meta_ad_account_id,
+            thirty_days_ago.isoformat(), today.isoformat()
+        )
+    except meta_api.MetaApiError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")
+
+    countries = set()
+    for campaign in data.get("campaigns", []):
+        for ad in campaign.get("ads", []):
+            countries.update(ad.get("countries", []))
+
+    return {"countries": sorted(list(countries))}
