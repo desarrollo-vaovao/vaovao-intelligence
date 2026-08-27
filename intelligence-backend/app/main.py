@@ -18,7 +18,7 @@ from app.api.routes import (
     reports,
     facebook,
 )
-from app.services import assets, browser_pool
+from app.services import assets, browser_pool, crypto_check
 
 # Importar los modelos antes de create_all para que se registren las tablas
 import app.models  # noqa: F401
@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     migrar a Alembic para manejar los cambios sin perder datos.
     """
     Base.metadata.create_all(bind=engine)
+    # Antes de nada: avisar si la llave de cifrado dejó de leer lo guardado.
+    # Va aquí para que salga en los logs del despliegue, cuando quien cambió
+    # la variable todavía puede deshacerlo (ver app/services/crypto_check.py).
+    crypto_check.revisar_credenciales()
     await browser_pool.start()
     await assets.warm_font()
     yield

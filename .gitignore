@@ -8,12 +8,18 @@ venv/
 
 # Backend
 intelligence-backend/.env
-intelligence-backend/dev.db
+# Cualquier base local o de respaldo, no solo dev.db por nombre exacto: los
+# scripts de verificación y las copias a mano ("dev.respaldo.db") generan
+# archivos con datos reales dentro, y este repositorio es PÚBLICO.
+*.db
+*.sqlite
+*.sqlite3
 
 # Frontend
 node_modules/
 .next/
 intelligence-web/.env.local
+intelligence-web/.vercel/
 *.log
 
 # Claude Code

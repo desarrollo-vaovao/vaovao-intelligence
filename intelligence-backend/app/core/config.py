@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     # Genera una con:  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     ENCRYPTION_KEY: str | None = None
 
+    # Lista de llaves separadas por coma, para PODER ROTAR sin romper nada.
+    # La PRIMERA cifra lo nuevo; todas se prueban al descifrar. Tiene
+    # precedencia sobre ENCRYPTION_KEY.
+    #
+    #   ENCRYPTION_KEYS="<llave_nueva>,<llave_anterior>"
+    #
+    # Para rotar: pon la nueva al frente y CONSERVA la anterior. Retírala
+    # solo después de recifrar lo guardado (scripts/recifrar_credenciales.py).
+    # Rotar sin conservar la anterior deja las credenciales de Meta ilegibles
+    # y no recuperables — fue el incidente del 2026-08-27.
+    ENCRYPTION_KEYS: str | None = None
+
     # ── Facebook / Meta OAuth ("Conectar con Facebook") ───────
     FB_APP_ID: str | None = None
     FB_APP_SECRET: str | None = None          # sensible — solo en .env, nunca en Git
