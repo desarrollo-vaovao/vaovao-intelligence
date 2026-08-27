@@ -26,10 +26,22 @@ def encrypt(plaintext: str) -> str:
 
 
 def decrypt(ciphertext: str) -> str | None:
-    """Descifra. Devuelve None si el dato está corrupto o la llave no corresponde."""
+    """
+    Descifra. Devuelve None si el dato está corrupto o la llave no corresponde
+    (típicamente porque ENCRYPTION_KEY se rotó y los datos quedaron cifrados
+    con la anterior). El dato sigue ahí: quien llama cuenta esos casos y avisa.
+
+    Una ENCRYPTION_KEY con FORMATO inválido no entra por aquí a propósito.
+    Eso no es un dato ilegible sino un servidor mal configurado, y se deja
+    salir el ValueError de `_fernet()` para que se vea como lo que es. Antes
+    se atrapaba junto con InvalidToken, así que una llave de 64 chars hex
+    (`openssl rand -hex 32`, que no es Fernet) se veía idéntica a "la llave
+    rotó" y mandaba a buscar una llave anterior que nunca existió.
+    """
+    fernet = _fernet()
     try:
-        return _fernet().decrypt(ciphertext.encode()).decode()
-    except (InvalidToken, ValueError):
+        return fernet.decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
         return None
 
 
