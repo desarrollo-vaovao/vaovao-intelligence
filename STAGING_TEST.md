@@ -4,3 +4,4 @@ Este archivo es temporal — confirma que el flujo feature → dev (staging) →
 Se borra después de la prueba.
 
 
+
