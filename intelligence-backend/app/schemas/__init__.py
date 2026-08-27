@@ -64,14 +64,20 @@ class MetaCentralTokenOut(BaseModel):
     label: str
     token_masked: str
     created_at: datetime
+    # False cuando la fila existe pero no se pudo descifrar (ENCRYPTION_KEY
+    # distinta a la que se usó para guardarla). Se devuelve igual, en vez de
+    # omitirla, para que la UI pueda mostrarla y ofrecer borrarla: si no,
+    # queda una fila invisible que no sirve y que nadie puede quitar.
+    # `token_masked` va vacío en ese caso — no hay nada que enmascarar.
+    readable: bool = True
 
 
 class MetaCredentialsStatus(BaseModel):
     """Estado de la conexión con Meta — NUNCA expone ningún token completo."""
+    # Solo cuenta tokens LEGIBLES: uno ilegible no conecta con nada.
     configured: bool
     tokens: list[MetaCentralTokenOut] = Field(default_factory=list)
-    # Tokens guardados que existen en la base pero no se pudieron descifrar
-    # (típicamente ENCRYPTION_KEY distinta a la que se usó para guardarlos).
+    # Cuántos de `tokens` vienen con readable=False.
     undecryptable_count: int = 0
 
 

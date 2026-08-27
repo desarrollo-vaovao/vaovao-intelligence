@@ -85,7 +85,9 @@ function DeleteTokenModal({ tokenRow, onClose, onDone }) {
         {err && <div className="err">{err}</div>}
         <p style={{ color: "var(--muted)" }}>
           ¿Eliminar el token del portafolio <strong style={{ color: "var(--text)" }}>{tokenRow.label}</strong>?
-          Los reportes que dependían solo de este token dejarán de tener acceso a esas cuentas.
+          {tokenRow.readable === false
+            ? " Este token ya está ilegible, así que hoy no da acceso a nada: borrarlo no quita nada que esté funcionando. Después vuelve a agregar el portafolio con su token."
+            : " Los reportes que dependían solo de este token dejarán de tener acceso a esas cuentas."}
         </p>
         <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
@@ -210,9 +212,15 @@ export default function ConexionPage() {
       {status?.undecryptable_count > 0 && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <div>
-            Hay {status.undecryptable_count} credencial(es) de Meta guardadas que el servidor
-            no pudo leer (la llave de cifrado del servidor no coincide con la que se usó para
-            guardarlas). Revisa <code>ENCRYPTION_KEY</code> — los datos siguen ahí, no se perdieron.
+            <b>
+              {status.undecryptable_count} credencial(es) quedaron ilegibles tras un cambio
+              de <code>ENCRYPTION_KEY</code>.
+            </b>
+            <div style={{ marginTop: 6 }}>
+              Se cifraron con una llave anterior. Si esa llave ya no existe, el token{" "}
+              <b>no se puede recuperar</b>: hay que borrar la credencial y volver a agregarla
+              con su token de System User. Aparecen abajo marcadas como ilegibles.
+            </div>
           </div>
         </div>
       )}
@@ -259,9 +267,11 @@ export default function ConexionPage() {
               <div key={t.id} className="portfolio-card">
                 <div className="row" style={{ marginBottom: 14, gap: 10, alignItems: "flex-start" }}>
                   <div style={{
-                    width: 34, height: 34, borderRadius: 9, background: "var(--gradient)",
+                    width: 34, height: 34, borderRadius: 9,
+                    background: t.readable ? "var(--gradient)" : "var(--border)",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 14, fontWeight: 700, color: "#fff", flexShrink: 0,
+                    fontSize: 14, fontWeight: 700,
+                    color: t.readable ? "#fff" : "var(--muted)", flexShrink: 0,
                   }}>
                     {t.label.trim().charAt(0).toUpperCase() || "?"}
                   </div>
@@ -270,8 +280,10 @@ export default function ConexionPage() {
                       {t.label}
                     </strong>
                     <div className="row" style={{ gap: 5, marginTop: 3 }}>
-                      <span className="pulse on" />
-                      <span style={{ fontSize: 11, color: "var(--success)" }}>Activo</span>
+                      <span className={`pulse ${t.readable ? "on" : "off"}`} />
+                      <span style={{ fontSize: 11, color: t.readable ? "var(--success)" : "var(--muted)" }}>
+                        {t.readable ? "Activo" : "Ilegible"}
+                      </span>
                     </div>
                   </div>
                   <button
@@ -285,13 +297,23 @@ export default function ConexionPage() {
                   </button>
                 </div>
 
-                <div className="portfolio-token-chip mono" style={{ marginBottom: 14 }}>
-                  <span className="dot" />{t.token_masked}
-                </div>
-
-                <button className="btn btn-ghost" style={{ width: "100%", justifyContent: "center" }} onClick={() => setAccountsTarget(t)}>
-                  Ver cuentas
-                </button>
+                {t.readable ? (
+                  <>
+                    <div className="portfolio-token-chip mono" style={{ marginBottom: 14 }}>
+                      <span className="dot" />{t.token_masked}
+                    </div>
+                    <button className="btn btn-ghost" style={{ width: "100%", justifyContent: "center" }} onClick={() => setAccountsTarget(t)}>
+                      Ver cuentas
+                    </button>
+                  </>
+                ) : (
+                  // Sin token legible no hay nada que enmascarar ni cuentas que
+                  // listar (/adaccounts respondería 400). Solo queda borrarla.
+                  <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
+                    El token no se pudo descifrar con la <code>ENCRYPTION_KEY</code> actual.
+                    Bórralo y vuelve a agregar el portafolio con su token.
+                  </div>
+                )}
               </div>
             ))}
           </div>
