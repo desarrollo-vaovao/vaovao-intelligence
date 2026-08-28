@@ -119,6 +119,39 @@ export const api = {
   fbLogin: () => request("/auth/facebook/login"),
   fbAccounts: () => request("/auth/facebook/adaccounts"),
   fbDisconnect: () => request("/auth/facebook/", { method: "DELETE" }),
+
+  // Leads
+  listLeads: (params = {}) => {
+    const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ""));
+    return request(`/leads?${new URLSearchParams(clean)}`);
+  },
+  getLead: (id) => request(`/leads/${id}`),
+  updateLead: (id, body) => request(`/leads/${id}`, { method: "PATCH", body }),
+  leadsStatus: () => request("/leads/status"),
+  exportLeadsCsv: async (params = {}) => {
+    const headers = {};
+    const token = getToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ""));
+    const qs = new URLSearchParams(clean).toString();
+    const res = await fetch(`${BASE}/leads/export/csv${qs ? `?${qs}` : ""}`, { headers });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.detail || "No se pudo exportar.");
+    }
+    const blob = await res.blob();
+    const disp = res.headers.get("Content-Disposition") || "";
+    const match = disp.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : "leads.csv";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    return filename;
+  },
+  reconcileOrphans: (pageId) =>
+    request(`/leads/orphans/${pageId}/reconcile`, { method: "POST" }),
 };
 
 export { getToken, request };

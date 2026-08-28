@@ -347,3 +347,56 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 .currency-toggle button.active { background: var(--surface2); color: var(--text); }
 .bell-btn { width: 32px; height: 32px; border: 1px solid var(--border2); border-radius: 9px; background: var(--surface); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
 .bell-btn:hover { border-color: var(--border3); }
+/* ── Leads: métricas ── */
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.metric-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; display: flex; flex-direction: column; gap: 6px;
+}
+.metric-card .metric-label { font-family: var(--font-unbounded), sans-serif; font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: .02em; }
+.metric-card .metric-value { font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+.metric-card .metric-delta { font-size: 11px; font-variant-numeric: tabular-nums; }
+.metric-card .metric-sub { font-size: 11px; color: var(--muted2); }
+
+/* ── Leads: Kanban ── */
+.kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.kanban-col {
+  min-width: 220px; flex: 1; display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface3); border-radius: var(--radius); padding: 14px 10px;
+}
+.kanban-col-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 4px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+.kanban-col-head h3 { font-size: 12px; font-weight: 500; }
+.kanban-card {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 13px 14px; cursor: pointer; transition: border-color .15s;
+}
+.kanban-card:hover { border-color: var(--border3); }
+
+/* ── Leads: badges de etapa ── */
+.badge-stage { font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 99px; display: inline-flex; align-items: center; letter-spacing: .2px; }
+.badge-stage-nuevo     { background: rgba(255,68,34,.12); color: var(--orange); }
+.badge-stage-contactado { background: var(--surface2); color: var(--text); }
+.badge-stage-calificado { background: var(--surface2); color: var(--text); }
+.badge-stage-propuesta { background: var(--surface2); color: var(--muted); }
+.badge-stage-ganado    { background: rgba(74,222,128,.10); color: var(--success); }
+.badge-stage-perdido   { background: var(--surface2); color: var(--muted2); }
+
+/* ── Leads: detalle ── */
+.lead-detail-field { display: flex; flex-direction: column; gap: 2px; }
+.lead-detail-field dt { font-size: 10px; color: var(--muted2); text-transform: uppercase; letter-spacing: .5px; }
+.lead-detail-field dd { font-size: 12.5px; margin: 0; word-break: break-word; }
+
+/* ── Leads: bitácora ── */
+.timeline { display: flex; flex-direction: column; gap: 0; border-left: 2px solid var(--border); margin-left: 8px; padding-left: 18px; }
+.timeline-entry { position: relative; padding: 10px 0; }
+.timeline-entry::before {
+  content: ""; position: absolute; left: -23px; top: 14px;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--border2);
+}
+.timeline-entry:first-child::before { background: var(--orange); }
+.timeline-entry .tl-action { font-size: 12px; font-weight: 500; }
+.timeline-entry .tl-detail { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.timeline-entry .tl-time { font-size: 10px; color: var(--muted2); margin-top: 4px; font-variant-numeric: tabular-nums; }
