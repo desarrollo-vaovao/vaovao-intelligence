@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core import crypto
-from app.models import User, Organization, MetaCentralToken, Client, UserRole
+from app.models import User, Organization, MetaCentralToken, UserRole
 from app.schemas import (
     MetaCentralTokenIn,
     MetaCentralTokenOut,
@@ -94,17 +94,11 @@ def add_meta_central_token(
     token_row = MetaCentralToken(org_id=org.id, label=data.label, token_encrypted=encrypted)
     db.add(token_row)
 
-    # El portafolio suele ser 1:1 con un cliente (ver conversación del setup) —
-    # si no existe ya un cliente con ese nombre, lo creamos para no tener que
-    # darlo de alta a mano en dos lugares distintos.
-    # Comparación en Python (no SQL) para no depender de TRIM de la base:
-    # copiar/pegar nombres desde otros lados a veces mete tabs/espacios que
-    # TRIM de SQL no siempre limpia (ya nos pasó con un ID de cuenta).
-    label = data.label.strip()
-    existing_clients = db.scalars(select(Client).where(Client.org_id == org.id)).all()
-    if not any(c.name.strip().lower() == label.lower() for c in existing_clients):
-        db.add(Client(org_id=org.id, name=label))
-
+    # NO se crea un Client automáticamente para este portafolio. Se probó
+    # (un portafolio ~1:1 con un cliente) y generaba clientes fantasma sin
+    # activos comerciales configurados, contaminando el selector de cliente
+    # del sidebar con nombres de portafolios de Meta en vez de clientes
+    # reales. Dar de alta un cliente sigue siendo manual, en Clientes.
     db.commit()
     return _status(org, db)
 
