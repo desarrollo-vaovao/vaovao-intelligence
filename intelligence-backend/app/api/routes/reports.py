@@ -221,14 +221,22 @@ async def report_summary(
     """
     Igual que /generate pero sin PDF: devuelve el mismo dict que arma el
     reporte (gasto, presupuesto, campañas) en JSON, para el panel de Resumen.
+
+    Este endpoint nunca llegó a funcionar: quedó escrito contra el modelo
+    viejo (reporte por Client) de antes del refactor a "activo comercial"
+    que ya usa /generate, y arrastraba tres bugs encadenados que un 422
+    genérico en el frontend escondía por completo:
+      1. ReportRequest.ad_account_id es el campo real del schema; esta
+         ruta leía data.client_id, que no existe ahí — Pydantic rechazaba
+         la petición ANTES de que el código de abajo corriera.
+      2. Aunque hubiera llegado a correr, pasaba un Client (con muchas
+         cuentas posibles) a build_report_data(), que espera UN AdAccount
+         — client.meta_ad_account_id no existe, hubiera reventado con
+         AttributeError.
+      3. Llamaba a _resolve_tokens (con guion bajo), que nunca existió;
+         solo está importado resolve_tokens (sin guion) de meta_tokens.
     """
-    client = db.scalar(
-        select(Client)
-        .where(Client.id == data.client_id, Client.org_id == current.org_id)
-        .options(selectinload(Client.ad_accounts))
-    )
-    if not client:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cliente no encontrado")
+    account = _get_owned_account(data.ad_account_id, current, db)
 
     if data.date_from > data.date_to:
         raise HTTPException(
@@ -236,13 +244,14 @@ async def report_summary(
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
 
-    tokens, error = _resolve_tokens(current, db)
+    tokens, error = resolve_tokens(current, db)
     if not tokens:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
     try:
         return await report_builder.build_report_data(
-            client, tokens, data.date_from, data.date_to, data.budget, data.currency.value
+            account, tokens, data.date_from, data.date_to, data.budget,
+            data.currency.value, data.country_code,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

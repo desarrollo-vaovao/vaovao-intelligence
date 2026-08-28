@@ -43,12 +43,19 @@ export default function ResumenPage() {
     setCurrency(localStorage.getItem(CURRENCY_KEY) || "USD");
   }, []);
 
+  // El backend reporta por activo comercial (ad_account_id), no por
+  // cliente — ver el mismo ajuste ya hecho en reportes/page.jsx. Un
+  // cliente `single` tiene una sola cuenta; se usa esa. Un `multi_station`
+  // puede tener varias: por ahora se resume solo con la primera, ya que
+  // esta pantalla no tiene selector de activo (a diferencia de Reportes).
+  const accountId = client?.ad_accounts?.[0]?.id ?? null;
+
   useEffect(() => {
-    if (!client || !dateFrom || !dateTo) { setSummary(null); return; }
+    if (!client || !dateFrom || !dateTo || !accountId) { setSummary(null); return; }
     let cancelled = false;
     setBusy(true); setErr(""); setSummary(null);
     api.reportSummary({
-      client_id: client.id,
+      ad_account_id: accountId,
       date_from: dateFrom,
       date_to: dateTo,
       budget: budget ? Number(budget) : null,
@@ -57,7 +64,7 @@ export default function ResumenPage() {
       .catch((e) => { if (!cancelled) setErr(e.message); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [client, dateFrom, dateTo, budget, currency]);
+  }, [client, accountId, dateFrom, dateTo, budget, currency]);
 
   function onBudgetChange(v) {
     setBudget(v);
@@ -90,6 +97,19 @@ export default function ResumenPage() {
         <div className="empty">
           <h3>Sin cliente seleccionado</h3>
           <p>Creá un cliente para ver su resumen de gasto.</p>
+          <Link href="/clientes" className="btn btn-primary" style={{ marginTop: 14 }}>Ir a Clientes</Link>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (!accountId) {
+    return (
+      <Shell>
+        <div className="page-head"><div><h1>Resumen</h1></div></div>
+        <div className="empty">
+          <h3>{client.name} no tiene una cuenta de Meta conectada</h3>
+          <p>Agrega un activo comercial en Clientes para ver su resumen de gasto.</p>
           <Link href="/clientes" className="btn btn-primary" style={{ marginTop: 14 }}>Ir a Clientes</Link>
         </div>
       </Shell>
