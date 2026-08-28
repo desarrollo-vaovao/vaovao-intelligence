@@ -3,6 +3,7 @@ VaoVao Intelligence — punto de entrada.
 Plataforma multi-tenant en FastAPI. Módulos: auth, clientes, usuarios,
 conexión con Meta (token central + OAuth por usuario) y reportes.
 """
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -31,6 +32,37 @@ from app.services import assets, browser_pool
 import app.models  # noqa: F401
 
 
+async def _precargar(nombre: str, tarea) -> None:
+    """
+    Corre una precarga de arranque sin que pueda tumbar el servicio.
+
+    POR QUÉ EXISTE
+    Un fallo aquí no debe costar más que la optimización que traía. Antes
+    estas dos precargas se esperaban (`await`) directamente en el lifespan,
+    y eso las volvía requisitos para servir: si una fallaba, el lifespan
+    reventaba y uvicorn nunca llegaba a escuchar. Fue exactamente lo que
+    tumbó staging — `browser_pool.start()` no encontraba el binario de
+    Chromium y se llevó por delante la API COMPLETA, login y /health
+    incluidos, cuando lo único que debía degradarse era la generación de
+    PDFs.
+
+    Ninguna de las dos es un requisito real: `render_pdf` levanta el
+    navegador solo si hace falta y `assets.font_css` cae a la fuente de
+    respaldo. Así que se registran los fallos y se sigue.
+    """
+    try:
+        await tarea
+    except asyncio.CancelledError:
+        # El server se está apagando; no es un fallo que reportar.
+        raise
+    except Exception as e:
+        print(f"[startup] La precarga '{nombre}' falló ({type(e).__name__}: {e}); "
+              "el servicio sigue arriba y se reintentará cuando se use.",
+              flush=True)
+    else:
+        print(f"[startup] Precarga '{nombre}' lista.", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -39,6 +71,16 @@ async def lifespan(app: FastAPI):
     cada reporte) y precarga la tipografía del reporte (ver
     app/services/assets.py — así ni el primer reporte tras un despliegue
     espera a que baje Poppins).
+
+    Las dos van en segundo plano, no esperadas
+    -----------------------------------------
+    Uvicorn no abre el puerto hasta que este lifespan devuelve el control.
+    Cualquier cosa que se espere aquí retrasa —o impide— que /health
+    empiece a responder, y el healthcheck del despliegue lee eso como que
+    la aplicación no levantó. Como ninguna de las dos precargas hace falta
+    para servir una petición (ver `_precargar`), se lanzan como tareas y el
+    puerto se abre de inmediato. Lo peor que puede pasar es que el primer
+    reporte pague la espera que la precarga iba a ahorrarle.
 
     Aquí ya NO se crean tablas
     --------------------------
@@ -58,9 +100,18 @@ async def lifespan(app: FastAPI):
     necesita `alembic upgrade head` una vez antes de arrancar. Es un comando
     más en el README contra una clase entera de derivas silenciosas.
     """
-    await browser_pool.start()
-    await assets.warm_font()
+    precargas = [
+        asyncio.create_task(_precargar("navegador para PDFs", browser_pool.start())),
+        asyncio.create_task(_precargar("tipografía del reporte", assets.warm_font())),
+    ]
+
     yield
+
+    # Al apagar: cortar las precargas que sigan en vuelo antes de cerrar el
+    # navegador, o `stop()` competiría con un `start()` a medio terminar.
+    for tarea in precargas:
+        tarea.cancel()
+    await asyncio.gather(*precargas, return_exceptions=True)
     await browser_pool.stop()
 
 

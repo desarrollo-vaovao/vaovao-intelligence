@@ -23,6 +23,13 @@ from playwright.async_api import (
 _playwright: Playwright | None = None
 _browser: Browser | None = None
 
+# Serializa los arranques del navegador. Sin esto, dos reportes que llegan
+# a la vez con el pool frío (o un reporte que llega mientras el arranque en
+# segundo plano del lifespan todavía no termina) lanzaban DOS Chromium: el
+# segundo pisaba `_browser` y el primero quedaba huérfano, consumiendo
+# memoria hasta que se cayera el contenedor.
+_start_lock = asyncio.Lock()
+
 # Cuántos PDFs se renderizan al mismo tiempo como máximo.
 RENDER_CONCURRENCY = 4
 _render_semaphore = asyncio.Semaphore(RENDER_CONCURRENCY)
@@ -32,26 +39,66 @@ _render_semaphore = asyncio.Semaphore(RENDER_CONCURRENCY)
 _LOAD_TIMEOUT_MS = 5_000
 
 
+async def _soltar_todo() -> None:
+    """
+    Cierra navegador y driver dejando el módulo como recién importado, sin
+    propagar errores.
+
+    Se usa tanto al apagar como para limpiar un arranque a medias: si
+    `chromium.launch()` falla, el proceso del driver de Playwright YA quedó
+    vivo. Sin esto, cada reintento sumaba un driver huérfano.
+    """
+    global _playwright, _browser
+    try:
+        if _browser is not None:
+            await _browser.close()
+    except Exception as e:
+        print(f"[browser_pool] No se pudo cerrar el navegador "
+              f"({type(e).__name__}: {e}).", flush=True)
+    finally:
+        _browser = None
+    try:
+        if _playwright is not None:
+            await _playwright.stop()
+    except Exception as e:
+        print(f"[browser_pool] No se pudo cerrar el driver de Playwright "
+              f"({type(e).__name__}: {e}).", flush=True)
+    finally:
+        _playwright = None
+
+
 async def start() -> None:
-    """Levanta el navegador compartido. Llamar una vez al arrancar el server."""
+    """
+    Levanta el navegador compartido si no está ya levantado.
+
+    Es idempotente y seguro de llamar concurrentemente: lo invocan tanto la
+    precarga en segundo plano del arranque (ver el lifespan de app/main.py)
+    como `render_pdf` cuando el pool está frío, y las dos pueden coincidir.
+    """
     global _playwright, _browser
     if _browser is not None:
         return
-    _playwright = await async_playwright().start()
-    _browser = await _playwright.chromium.launch(args=[
-        "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
-    ])
+    async with _start_lock:
+        # Otro llamador pudo haberlo levantado mientras esperábamos el lock.
+        if _browser is not None:
+            return
+        try:
+            if _playwright is None:
+                _playwright = await async_playwright().start()
+            _browser = await _playwright.chromium.launch(args=[
+                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+            ])
+        except BaseException:
+            # BaseException y no Exception: si esto se cancela (timeout del
+            # llamador, apagado del server), igual hay que soltar el driver
+            # a medio levantar antes de re-lanzar.
+            await _soltar_todo()
+            raise
 
 
 async def stop() -> None:
     """Cierra el navegador compartido. Llamar al apagar el server."""
-    global _playwright, _browser
-    if _browser is not None:
-        await _browser.close()
-        _browser = None
-    if _playwright is not None:
-        await _playwright.stop()
-        _playwright = None
+    await _soltar_todo()
 
 
 async def render_pdf(html: str) -> bytes:
