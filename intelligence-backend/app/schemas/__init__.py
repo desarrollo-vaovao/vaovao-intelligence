@@ -75,6 +75,19 @@ class MetaCredentialsStatus(BaseModel):
     undecryptable_count: int = 0
 
 
+class OrganizationSettings(BaseModel):
+    """
+    Preferencias de la organización (Ajustes > General). `exchange_rate_usd_gtq`
+    es None mientras nadie lo haya configurado — el frontend debe mostrar
+    ese caso como "sin configurar", no como 0.
+    """
+    exchange_rate_usd_gtq: float | None = None
+
+
+class OrganizationSettingsUpdate(BaseModel):
+    exchange_rate_usd_gtq: float = Field(gt=0)
+
+
 # ── Reportes (módulo preparado, se activa al conectar Meta) ────
 class ReportType(str, enum.Enum):
     quincenal = "quincenal"

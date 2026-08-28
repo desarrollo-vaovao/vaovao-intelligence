@@ -170,6 +170,21 @@ async def _meta_account_name(meta_ad_account_id: str, current: User, db: Session
     return detail
 
 
+async def _meta_account_currency(meta_ad_account_id: str, current: User, db: Session) -> str | None:
+    """
+    Moneda en la que esta cuenta reporta en Meta, o None si no se pudo leer
+    (ID inválido, sin token con acceso, o falla de red). A diferencia de
+    `_meta_account_name`, no bloquea el alta del activo comercial si falla:
+    report_builder la vuelve a intentar on-demand la primera vez que hace
+    falta para un reporte, así que no vale la pena romper el registro por
+    esto — ya se validó el acceso vía _meta_account_name.
+    """
+    tokens, _ = resolve_tokens(current, db)
+    if not tokens:
+        return None
+    return await meta_api.get_account_currency_with_fallback(tokens, meta_ad_account_id)
+
+
 @router.post("/{client_id}/ad-accounts", response_model=AdAccountOut, status_code=201)
 async def add_ad_account(
     client_id: int,
@@ -183,11 +198,13 @@ async def add_ad_account(
     """
     client = _get_owned_client(client_id, current, db)
     label = await _meta_account_name(data.meta_ad_account_id, current, db)
+    currency = await _meta_account_currency(data.meta_ad_account_id, current, db)
 
     account = AdAccount(
         client_id=client.id,
         label=label,
         meta_ad_account_id=data.meta_ad_account_id,
+        native_currency=currency,
         recipient_emails=[str(e) for e in data.recipient_emails],
     )
     db.add(account)
@@ -218,6 +235,7 @@ async def update_ad_account(
     # vuelve a heredar (y si Meta no responde, el cambio no pasa).
     if data.meta_ad_account_id is not None:
         account.label = await _meta_account_name(data.meta_ad_account_id, current, db)
+        account.native_currency = await _meta_account_currency(data.meta_ad_account_id, current, db)
         account.meta_ad_account_id = data.meta_ad_account_id
     if data.recipient_emails is not None:
         account.recipient_emails = [str(e) for e in data.recipient_emails]

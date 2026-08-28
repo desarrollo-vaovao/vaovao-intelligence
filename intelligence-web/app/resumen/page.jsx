@@ -5,6 +5,7 @@ import Shell from "@/lib/Shell";
 import { useClient } from "@/lib/clients";
 import { api } from "@/lib/api";
 import DateRangePicker, { periodoQuincenal } from "@/lib/DateRangePicker";
+import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
 
 const BUDGET_KEY = "vv_resumen_budget";
 const CURRENCY_KEY = "vv_resumen_currency";
@@ -26,6 +27,7 @@ function flattenCampaigns(summary) {
 
 export default function ResumenPage() {
   const { client, loading: clientLoading } = useClient() || {};
+  const exchangeRate = useExchangeRate();
 
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -71,9 +73,18 @@ export default function ResumenPage() {
     localStorage.setItem(BUDGET_KEY, v);
   }
 
-  function onCurrencyChange(v) {
-    setCurrency(v);
-    localStorage.setItem(CURRENCY_KEY, v);
+  function onCurrencyChange(next) {
+    // El presupuesto lo escribe la persona directamente en la moneda que
+    // tiene seleccionada — sin esto, cambiar de USD a GTQ dejaba el mismo
+    // número con otro símbolo, como si $50 se hubieran vuelto Q50 solos.
+    if (budget) {
+      const factor = exchangeFactor(currency, next, exchangeRate);
+      const converted = (Number(budget) * factor).toFixed(2);
+      setBudget(converted);
+      localStorage.setItem(BUDGET_KEY, converted);
+    }
+    setCurrency(next);
+    localStorage.setItem(CURRENCY_KEY, next);
   }
 
   const symbol = summary?.currency_symbol || (currency === "GTQ" ? "Q" : "$");
@@ -127,11 +138,19 @@ export default function ResumenPage() {
 
       <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
         <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
-        <input
-          className="input mono" type="number" placeholder="Presupuesto"
-          value={budget} onChange={(e) => onBudgetChange(e.target.value)}
-          style={{ maxWidth: 160 }}
-        />
+        <div style={{ position: "relative", maxWidth: 160 }}>
+          <span style={{
+            position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)",
+            color: "var(--muted)", fontSize: 12, pointerEvents: "none",
+          }}>
+            {currency === "GTQ" ? "Q" : "$"}
+          </span>
+          <input
+            className="input mono" type="number" placeholder="Presupuesto"
+            value={budget} onChange={(e) => onBudgetChange(e.target.value)}
+            style={{ paddingLeft: 22 }}
+          />
+        </div>
         <div style={{ display: "flex", gap: 4 }}>
           {["USD", "GTQ"].map((c) => (
             <button

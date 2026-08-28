@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core import crypto
 from app.models import User, Organization, MetaCentralToken, Client, UserRole
@@ -25,6 +25,8 @@ from app.schemas import (
     MetaCentralTokenIn,
     MetaCentralTokenOut,
     MetaCredentialsStatus,
+    OrganizationSettings,
+    OrganizationSettingsUpdate,
 )
 from app.services import meta_api
 
@@ -139,3 +141,28 @@ def delete_meta_central_token(
     db.delete(token_row)
     db.commit()
     return _status(org, db)
+
+
+@router.get("/settings", response_model=OrganizationSettings)
+def get_settings(
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Cualquier usuario autenticado puede LEER las preferencias de su
+    organización (las necesita para generar reportes en GTQ)."""
+    org = db.get(Organization, current.org_id)
+    return OrganizationSettings(exchange_rate_usd_gtq=org.exchange_rate_usd_gtq)
+
+
+@router.patch("/settings", response_model=OrganizationSettings)
+def update_settings(
+    data: OrganizationSettingsUpdate,
+    current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
+    db: Session = Depends(get_db),
+):
+    """Solo owner/admin pueden CAMBIAR el tipo de cambio — afecta el gasto
+    en GTQ que ve todo el equipo, no es una preferencia personal."""
+    org = db.get(Organization, current.org_id)
+    org.exchange_rate_usd_gtq = data.exchange_rate_usd_gtq
+    db.commit()
+    return OrganizationSettings(exchange_rate_usd_gtq=org.exchange_rate_usd_gtq)

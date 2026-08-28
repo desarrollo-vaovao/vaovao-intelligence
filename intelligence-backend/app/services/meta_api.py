@@ -255,6 +255,32 @@ async def check_account_access_with_fallback(tokens: list[str], ad_account_id: s
     return result
 
 
+async def get_account_currency(token: str, ad_account_id: str) -> str | None:
+    """Moneda en la que esta cuenta reporta gasto en Meta (ej. "USD", "GTQ").
+
+    No todas las cuentas de un mismo cliente están en la misma: algunas se
+    configuraron en Meta Ads Manager directamente en quetzales. `None` si
+    el token no tiene acceso o la petición falla — nunca lanza, para que
+    esto se pueda intentar "en el camino" sin arriesgar el flujo principal
+    (ver report_builder, que la resuelve on-demand y la cachea).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            data = await _get(client, ad_account_id, token, {"fields": "currency"})
+        return data.get("currency")
+    except (MetaApiError, httpx.HTTPError, httpx.InvalidURL):
+        return None
+
+
+async def get_account_currency_with_fallback(tokens: list[str], ad_account_id: str) -> str | None:
+    """Igual que get_account_currency, probando varios tokens en orden."""
+    for token in tokens:
+        currency = await get_account_currency(token, ad_account_id)
+        if currency:
+            return currency
+    return None
+
+
 async def get_campaigns(client: httpx.AsyncClient, token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
     return await _get_all(client, f"{ad_account_id}/campaigns", token, {

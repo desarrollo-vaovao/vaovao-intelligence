@@ -5,9 +5,11 @@ import Shell from "@/lib/Shell";
 import { api, request } from "@/lib/api";
 import { useClient } from "@/lib/clients";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
+import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
 
 export default function ReportesPage() {
   const { client } = useClient() || {};
+  const exchangeRate = useExchangeRate();
 
   // Los activos comerciales del CLIENTE ACTIVO únicamente (el que se elige
   // en el sidebar) — nunca de toda la organización. La mayoría de clientes
@@ -83,6 +85,17 @@ export default function ReportesPage() {
       const m = periodoMensual(0);
       setDateFrom(m.from); setDateTo(m.to);
     }
+  }
+
+  // El presupuesto lo escribe la persona directamente en la moneda que
+  // tiene seleccionada — sin esto, cambiar de USD a GTQ dejaba el mismo
+  // número con otro símbolo, como si $50 se hubieran vuelto Q50 solos.
+  function changeCurrency(next) {
+    if (budget) {
+      const factor = exchangeFactor(currency, next, exchangeRate);
+      setBudget((Number(budget) * factor).toFixed(2));
+    }
+    setCurrency(next);
   }
 
   const ready = status?.generation_available;
@@ -243,7 +256,7 @@ export default function ReportesPage() {
                   <button
                     key={val}
                     type="button"
-                    onClick={() => setCurrency(val)}
+                    onClick={() => changeCurrency(val)}
                     style={{
                       padding: "9px 0", borderRadius: "var(--radius-sm)", cursor: "pointer",
                       fontFamily: "inherit", fontSize: 11.5, fontWeight: activo ? 500 : 400,
@@ -262,8 +275,17 @@ export default function ReportesPage() {
 
           <div className="field">
             <label>Presupuesto aprobado del período (opcional)</label>
-            <input className="input mono" type="number" value={budget}
-              onChange={(e) => setBudget(e.target.value)} placeholder="Ej. 9500" />
+            <div style={{ position: "relative" }}>
+              <span style={{
+                position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)",
+                color: "var(--muted)", fontSize: 12, pointerEvents: "none",
+              }}>
+                {currency === "GTQ" ? "Q" : "$"}
+              </span>
+              <input className="input mono" type="number" value={budget}
+                onChange={(e) => setBudget(e.target.value)} placeholder="Ej. 9500"
+                style={{ paddingLeft: 22 }} />
+            </div>
           </div>
 
           <button

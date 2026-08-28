@@ -58,6 +58,9 @@ export const api = {
   deleteMetaToken: (id) => request(`/organization/meta-credentials/${id}`, { method: "DELETE" }),
   getMetaTokenAdAccounts: (id) => request(`/organization/meta-credentials/${id}/adaccounts`),
 
+  getOrgSettings: () => request("/organization/settings"),
+  updateOrgSettings: (body) => request("/organization/settings", { method: "PATCH", body }),
+
   reportStatus: () => request("/reports/status"),
   // La generación corre en segundo plano en el backend: esto arranca el job,
   // hace polling del estado y descarga el PDF cuando queda listo.

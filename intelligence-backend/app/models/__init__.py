@@ -15,7 +15,7 @@ cada query filtra por org_id y nadie ve datos de otra organización.
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index
+from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -51,6 +51,14 @@ class Organization(Base):
     # ── Credenciales de Meta ──
     # La app de Meta es una sola para toda la organización.
     meta_app_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Tipo de cambio USD->GTQ que usa esta organización al mostrar reportes
+    # en quetzales. None = todavía no lo configuraron; ver
+    # report_builder.DEFAULT_EXCHANGE_RATE_USD_GTQ para el valor de
+    # respaldo. Es un valor fijo que el owner/admin actualiza a mano
+    # (Ajustes), no una tasa en vivo — así un reporte nunca falla por
+    # depender de un servicio externo de cambio de moneda.
+    exchange_rate_usd_gtq: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
@@ -103,6 +111,13 @@ class AdAccount(Base):
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
     label: Mapped[str] = mapped_column(String(80))            # ej. "Guatemala", "Panamá", o "Principal"
     meta_ad_account_id: Mapped[str] = mapped_column(String(60))  # ej. "act_1234567890"
+    # Moneda en la que ESTA cuenta reporta gasto en Meta (ej. "USD", "GTQ").
+    # No todas las cuentas de un cliente están en la misma moneda: algunas
+    # se configuraron en Meta Ads Manager directamente en quetzales. None
+    # = todavía no se consultó a Meta (cuentas creadas antes de este campo,
+    # o si la consulta falló) — report_builder la resuelve on-demand y la
+    # persiste la primera vez que hace falta.
+    native_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
     recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

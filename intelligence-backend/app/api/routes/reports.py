@@ -73,11 +73,13 @@ def _cleanup_jobs() -> None:
 async def _run_report_job(
     job_id: str, account: AdAccount, tokens: list[str],
     date_from, date_to, budget, currency: str, country_code: str | None = None,
+    source_currency: str = "USD", exchange_rate: float | None = None,
 ) -> None:
     try:
         async with _generation_semaphore:
             pdf_bytes, filename = await report_builder.build_pdf(
-                account, tokens, date_from, date_to, budget, currency, country_code
+                account, tokens, date_from, date_to, budget, currency, country_code,
+                source_currency, exchange_rate,
             )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
@@ -107,6 +109,30 @@ def _get_owned_account(account_id: int, current: User, db: Session) -> AdAccount
     if not account:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Activo comercial no encontrado")
     return account
+
+
+async def _resolve_currency_context(
+    account: AdAccount, tokens: list[str], current: User, db: Session
+) -> tuple[str, float | None]:
+    """
+    (moneda_de_origen, tipo_de_cambio_de_la_organizacion) para convertir el
+    reporte de esta cuenta. Si `account.native_currency` todavia no se
+    conoce (cuenta creada antes de este campo, o la consulta a Meta falló
+    en su momento), se intenta una vez aquí y se persiste para la próxima
+    — así el costo de la consulta a Meta se paga una sola vez por cuenta,
+    no en cada reporte. Si vuelve a fallar, se asume "USD" (lo más común)
+    en vez de bloquear el reporte por esto.
+    """
+    if account.native_currency is None:
+        currency = await meta_api.get_account_currency_with_fallback(
+            tokens, account.meta_ad_account_id
+        )
+        if currency:
+            account.native_currency = currency
+            db.commit()
+
+    org = db.get(Organization, current.org_id)
+    return account.native_currency or "USD", org.exchange_rate_usd_gtq if org else None
 
 
 def _meta_connected(org: Organization, db: Session) -> bool:
@@ -170,6 +196,8 @@ async def generate_report(
             "El motor de generación aún no está activo.",
         )
 
+    source_currency, exchange_rate = await _resolve_currency_context(account, tokens, current, db)
+
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {
         "org_id": current.org_id,
@@ -180,7 +208,8 @@ async def generate_report(
         "created_at": time.monotonic(),
     }
     asyncio.create_task(_run_report_job(
-        job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value, data.country_code
+        job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value,
+        data.country_code, source_currency, exchange_rate,
     ))
     return ReportJobCreated(job_id=job_id)
 
@@ -248,10 +277,13 @@ async def report_summary(
     if not tokens:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
+    source_currency, exchange_rate = await _resolve_currency_context(account, tokens, current, db)
+
     try:
         return await report_builder.build_report_data(
             account, tokens, data.date_from, data.date_to, data.budget,
             data.currency.value, data.country_code,
+            source_currency, exchange_rate,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
