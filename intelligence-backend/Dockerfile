@@ -29,4 +29,19 @@ COPY . .
 # tablas del esquema base y hay que marcarla con `alembic stamp 0001` ANTES de
 # desplegar, o esta línea intentará crearlas de nuevo y fallará. Ver
 # docs/DEPLOY_ALEMBIC.md.
+#
+# NO COPIAR ESTA LÍNEA AL CAMPO "Start Command" DE RAILWAY
+# --------------------------------------------------------
+# El `sh -c` de aquí es lo que hace que `&&` encadene los dos comandos y que
+# `${PORT:-8000}` se expanda. Railway NO mete el Start Command en un shell:
+# lo trata como ejecutable + argumentos. Pegado ahí, este comando arranca
+# `alembic` pasándole "&&", "uvicorn", "--port", "${PORT:-8000}"… como
+# argumentos sueltos, uvicorn nunca corre y el contenedor se queda vivo pero
+# sin escuchar. Da 502 con el healthcheck fallando y sin un solo error en los
+# logs — costó una mañana entera de depuración en staging, donde alguien lo
+# había pegado en ese campo.
+#
+# Si un entorno necesita un arranque distinto, se deja el Start Command VACÍO
+# (para que mande este CMD) o se invoca el shell explícitamente:
+#   sh -c "alembic upgrade head && uvicorn ..."
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
