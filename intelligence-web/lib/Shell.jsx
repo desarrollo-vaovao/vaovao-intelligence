@@ -203,7 +203,7 @@ export default function Shell({ children }) {
         </div>
 
         <button type="button" className="collapse-btn" onClick={toggleCollapse} title={collapsed ? "Expandir" : "Colapsar"}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"></rect><path d="M10 4v16"></path></svg>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"></rect><path d="M12 4v16"></path></svg>
         </button>
 
         <div className="sidebar-foot">
