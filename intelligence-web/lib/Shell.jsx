@@ -201,14 +201,6 @@ export default function Shell({ children }) {
         <button type="button" className="collapse-btn" onClick={toggleCollapse} title={collapsed ? "Expandir" : "Colapsar"}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"></rect><path d="M12 4v16"></path></svg>
         </button>
-
-        <div className="sidebar-foot">
-          <div className="sidebar-user">
-            <b>{user.full_name}</b>
-            <span className="mono" style={{ fontSize: 12 }}>{user.role}</span>
-          </div>
-          <div className="signout" onClick={logout}>Cerrar sesión</div>
-        </div>
       </aside>
 
       <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
