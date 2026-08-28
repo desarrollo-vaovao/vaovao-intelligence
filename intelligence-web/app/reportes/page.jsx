@@ -3,12 +3,20 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Shell from "@/lib/Shell";
 import { api, request } from "@/lib/api";
+import { useClient } from "@/lib/clients";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 
 export default function ReportesPage() {
-  // Los activos comerciales de todos los clientes, en una sola lista plana:
-  // el reporte es siempre de un activo, nunca de un cliente entero.
-  const [accounts, setAccounts] = useState([]);
+  const { client } = useClient() || {};
+
+  // Los activos comerciales del CLIENTE ACTIVO únicamente (el que se elige
+  // en el sidebar) — nunca de toda la organización. La mayoría de clientes
+  // son `single` (un solo ad account); `multi_station` puede tener varios
+  // (una franquicia con una cuenta por país/estación), de ahí que siga
+  // haciendo falta un selector, pero acotado a este cliente.
+  const accounts = [...(client?.ad_accounts || [])].sort((a, b) =>
+    a.label.localeCompare(b.label, "es")
+  );
   const [status, setStatus] = useState(null);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
@@ -25,16 +33,7 @@ export default function ReportesPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const [cl, st] = await Promise.all([api.listClients(), api.reportStatus()]);
-        setAccounts(
-          cl.flatMap((c) => c.ad_accounts)
-            .sort((a, b) => a.label.localeCompare(b.label, "es"))
-        );
-        setStatus(st);
-      } catch (e) { setErr(e.message); }
-    })();
+    api.reportStatus().then(setStatus).catch((e) => setErr(e.message));
     // Período inicial: la quincena actual
     const q = periodoQuincenal(0);
     setDateFrom(q.from); setDateTo(q.to);
@@ -58,6 +57,21 @@ export default function ReportesPage() {
       setLoadingCountries(false);
     }
   }
+
+  // Al cambiar el CLIENTE activo (sidebar): sus cuentas son las únicas
+  // válidas para reportar, así que cualquier selección de un cliente
+  // anterior queda descartada. Si el cliente activo tiene una sola cuenta
+  // (el caso común, ClientType.single), se autoselecciona y el selector
+  // no le pide nada al usuario; con varias (multi_station) sigue haciendo
+  // falta elegir, pero solo entre las de este cliente.
+  useEffect(() => {
+    if (accounts.length === 1) {
+      cambiarActivo(String(accounts[0].id));
+    } else {
+      cambiarActivo("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id]);
 
   // Al cambiar el tipo de reporte, se llenan las fechas solas
   function cambiarTipo(tipo) {
@@ -131,17 +145,38 @@ export default function ReportesPage() {
         {info && <div className="notice" style={{ marginBottom: 18 }}><div>{info}</div></div>}
 
         <div className="card" style={{ padding: 24 }}>
-          <div className="field">
-            <label>Activo comercial</label>
-            <select className="input" value={accountId} onChange={(e) => cambiarActivo(e.target.value)}>
-              <option value="">— Selecciona un activo comercial —</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {accounts.length === 0 && (
+            <div className="field">
+              <label>Activo comercial</label>
+              <input
+                className="input"
+                value={client ? "Este cliente no tiene una cuenta de Meta conectada" : "Selecciona un cliente en el menú lateral"}
+                disabled
+                readOnly
+              />
+            </div>
+          )}
+
+          {accounts.length === 1 && (
+            <div className="field">
+              <label>Activo comercial</label>
+              <input className="input" value={accounts[0].label} disabled readOnly />
+            </div>
+          )}
+
+          {accounts.length > 1 && (
+            <div className="field">
+              <label>Activo comercial</label>
+              <select className="input" value={accountId} onChange={(e) => cambiarActivo(e.target.value)}>
+                <option value="">— Selecciona un activo comercial de {client.name} —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {accountId && countries.length > 0 && (
             <div className="field">
