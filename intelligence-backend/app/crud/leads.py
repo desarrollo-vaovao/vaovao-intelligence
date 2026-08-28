@@ -75,9 +75,27 @@ def _like_patterns(term: str) -> list[str]:
       (macOS entrega NFD) y del teclado de quien busca. Sin esto, un
       "Muñoz" tecleado en Windows no encuentra al "Muñoz" que Meta mandó
       desde un iPhone.
+    * lo mismo para mayúsculas/minúsculas del término COMPLETO, ANTES de
+      escapar. "É" (U+00C9) escapa a `\\u00c9`; "é" (U+00E9) escapa a
+      `\\u00e9`. Esos dos dígitos hexadecimales (c y e) no son una letra
+      en dos mayúsculas — son dos códigos de carácter distintos. Ningún
+      ILIKE ni collation los va a plegar entre sí, porque no hay
+      mayúscula/minúscula que plegar a ese nivel: la información de "es
+      la misma letra en otro caso" se pierde en cuanto el término se
+      escapa. Por eso hay que resolver el caso ANTES del escape, generando
+      también `term.lower()` y `term.upper()` del término íntegro (Python
+      ya sabe hacerle upper/lower correcto a acentos): así, buscar "JOSÉ"
+      también prueba el escapado de "josé", que sí coincide con el
+      "Jos\\u00e9" que quedó guardado.
     """
     variants: list[str] = []
-    for form in (term, unicodedata.normalize("NFC", term), unicodedata.normalize("NFD", term)):
+    case_forms = (term, term.lower(), term.upper())
+    all_forms = [
+        f
+        for case_form in case_forms
+        for f in (case_form, unicodedata.normalize("NFC", case_form), unicodedata.normalize("NFD", case_form))
+    ]
+    for form in all_forms:
         # json.dumps("José") -> '"Jos\\u00e9"'; se quitan las comillas externas.
         for variant in (form, json.dumps(form, ensure_ascii=True)[1:-1]):
             if variant not in variants:
@@ -144,10 +162,13 @@ def _search_condition(term: str) -> ColumnElement[bool]:
       miles de leads por organización — es correcto; si algún día pesa,
       la salida es un índice GIN de trigramas sobre la expresión en
       Postgres, sin cambiar esta interfaz.
-    * En SQLite el ILIKE se traduce a `lower() LIKE lower()` y `lower()`
-      de SQLite es sólo ASCII, así que ahí la búsqueda no es insensible a
-      mayúsculas para acentos ("JOSÉ" no encuentra "José"). En Postgres,
-      que es producción, ILIKE sí lo resuelve.
+    * Mayúsculas/minúsculas en letras con acento se resuelven ANTES del
+      ILIKE, en `_like_patterns()` (ver su docstring): el escape ASCII de
+      "É" y de "é" son dígitos hexadecimales distintos, no una letra en
+      dos casos, así que ningún ILIKE los pliega por sí solo. No es una
+      limitación de motor (no es "en SQLite falla, en Postgres no") —
+      hace falta generar la variante ya plegada del término antes de
+      escaparlo, en cualquier motor.
     """
     haystack = cast(Lead.form_data, Text)
     return or_(
