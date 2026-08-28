@@ -60,6 +60,14 @@ class Organization(Base):
     # depender de un servicio externo de cambio de moneda.
     exchange_rate_usd_gtq: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Ventana de atribución que usa TODA la organización al pedir insights a
+    # Meta (parámetro action_attribution_windows). None = se deja que Meta
+    # use el default de cada cuenta publicitaria, igual que hoy. Es a nivel
+    # organización y no por usuario: dos personas generando el mismo reporte
+    # del mismo cliente no pueden ver conversiones distintas sin darse
+    # cuenta. Valores válidos en app/schemas ATTRIBUTION_WINDOWS.
+    attribution_window: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[list["Client"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     leads: Mapped[list["Lead"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
@@ -79,6 +87,18 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.member)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # ── Perfil y preferencias de reporte (Ajustes > Cuenta) ──
+    # Puramente informativo, no afecta ninguna lógica.
+    job_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Con qué moneda abre Resumen/Reportes esta persona. None = USD, el
+    # comportamiento de hoy. A diferencia de attribution_window, esto SÍ es
+    # por usuario: no cambia ningún número, solo en qué moneda lo ve cada
+    # quien al abrir el formulario.
+    default_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    # "quincenal" | "mensual" | "personalizado" — mismos valores que ya usa
+    # el selector de tipo de reporte. None = "quincenal", el de hoy.
+    default_cadence: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     organization: Mapped["Organization"] = relationship(back_populates="users")
 
@@ -118,6 +138,13 @@ class AdAccount(Base):
     # o si la consulta falló) — report_builder la resuelve on-demand y la
     # persiste la primera vez que hace falta.
     native_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    # Zona horaria real de ESTA cuenta en Meta (ej. "America/Guatemala").
+    # Puramente informativo: Meta agrupa los insights "por día" según la
+    # zona horaria de cada cuenta publicitaria y eso no se puede
+    # sobreescribir por parámetro (a diferencia de la ventana de
+    # atribución) — un selector editable estaría mintiendo. Se resuelve
+    # on-demand igual que native_currency, en la misma llamada a Meta.
+    timezone_name: Mapped[str | None] = mapped_column(String(60), nullable=True)
     # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
     recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

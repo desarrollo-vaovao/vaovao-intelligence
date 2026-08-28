@@ -11,6 +11,7 @@ pueden ser marcas sin relación entre sí, y mezclarlas en un PDF no sirve.
 from datetime import date
 
 from app.models import AdAccount
+from app.schemas import ATTRIBUTION_WINDOWS
 from app.services import meta_api, pdf_generator, perf
 
 _MESES = ["ene", "feb", "mar", "abr", "may", "jun",
@@ -129,7 +130,8 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
                             budget: float | None = None, currency: str = "USD",
                             country_code: str | None = None,
                             source_currency: str = "USD",
-                            exchange_rate: float | None = None) -> dict:
+                            exchange_rate: float | None = None,
+                            attribution_window: str | None = None) -> dict:
     """
     Construye el diccionario que pdf_generator sabe dibujar, para UN activo
     comercial.
@@ -146,10 +148,16 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
     `exchange_rate` — ver `_exchange_factor`. Si `exchange_rate` es None se
     usa `DEFAULT_EXCHANGE_RATE_USD_GTQ` como respaldo.
 
+    `attribution_window` es la preferencia de la organización (Ajustes >
+    Preferencias de reporte, ver schemas.ATTRIBUTION_WINDOWS). None = se
+    deja que Meta use el default de esta cuenta publicitaria puntual, igual
+    que antes de que existiera esta preferencia.
+
     Lanza meta_api.MetaApiError si ningún token puede leer la cuenta.
     """
     data = await meta_api.get_account_data_with_fallback(
-        tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat()
+        tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat(),
+        ATTRIBUTION_WINDOWS.get(attribution_window),
     )
     campaigns, filtered_spend = _filter_campaigns_by_country(data["campaigns"], country_code)
     total_spend = filtered_spend if country_code else data["total_spend"]
@@ -175,7 +183,8 @@ async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date
                     budget: float | None = None, currency: str = "USD",
                     country_code: str | None = None,
                     source_currency: str = "USD",
-                    exchange_rate: float | None = None) -> tuple[bytes, str]:
+                    exchange_rate: float | None = None,
+                    attribution_window: str | None = None) -> tuple[bytes, str]:
     """
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
 
@@ -185,12 +194,13 @@ async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date
     frontend o en la red, no acá.
 
     Si `country_code` se proporciona (ej. "GT", "US"), el reporte solo incluye
-    anuncios pautados para ese país.
+    anuncios pautados para ese país. `attribution_window`, ver
+    build_report_data.
     """
     async with perf.aphase(f"REPORTE · total ({account.label})") as info:
         report_data = await build_report_data(
             account, tokens, date_from, date_to, budget, currency, country_code,
-            source_currency, exchange_rate,
+            source_currency, exchange_rate, attribution_window,
         )
         info["campañas"] = len(report_data["campaigns"])
         pdf_bytes = await pdf_generator.generate_pdf(report_data)

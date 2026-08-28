@@ -1,14 +1,16 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Shell from "@/lib/Shell";
 import { api, request } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useClient } from "@/lib/clients";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
 
 export default function ReportesPage() {
   const { client } = useClient() || {};
+  const { user } = useAuth() || {};
   const exchangeRate = useExchangeRate();
 
   // Los activos comerciales del CLIENTE ACTIVO únicamente (el que se elige
@@ -40,6 +42,21 @@ export default function ReportesPage() {
     const q = periodoQuincenal(0);
     setDateFrom(q.from); setDateTo(q.to);
   }, []);
+
+  // Moneda y cadencia con las que abre este formulario, según el perfil de
+  // quien lo usa (Ajustes > Preferencias de reporte). Solo una vez, cuando
+  // el usuario termina de cargar — así no pisa un cambio manual posterior
+  // en esta misma sesión.
+  const aplicoDefaultsPerfil = useRef(false);
+  useEffect(() => {
+    if (aplicoDefaultsPerfil.current || !user) return;
+    aplicoDefaultsPerfil.current = true;
+    if (user.default_currency) setCurrency(user.default_currency);
+    if (user.default_cadence && user.default_cadence !== "quincenal") {
+      cambiarTipo(user.default_cadence);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   // Al cambiar el activo comercial, cargar los países disponibles
   async function cambiarActivo(id) {

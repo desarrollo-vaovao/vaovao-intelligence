@@ -329,7 +329,11 @@ class Factory:
         n = self._next()
         user = User(
             org_id=org.id,
-            email=email or f"user{n}@ejemplo.test",
+            # ".test" es un TLD reservado (RFC 2606); email-validator lo
+            # rechaza como "special-use" al serializar por EmailStr — nadie
+            # lo había notado porque ningún endpoint devolvía UserOut para
+            # un usuario de fábrica sin correo explícito hasta ahora.
+            email=email or f"user{n}@ejemplo.com",
             hashed_password="no-es-un-hash-real",
             full_name=full_name or f"Usuario {n}",
             role=role,

@@ -9,11 +9,46 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.models import User, UserRole
-from app.schemas import UserCreate, UserUpdate, UserOut
+from app.schemas import UserCreate, UserUpdate, UserOut, ProfileUpdate, PasswordChange
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.patch("/me", response_model=UserOut)
+def update_my_profile(
+    data: ProfileUpdate,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Cada quien edita su propio perfil y preferencias de reporte (Ajustes >
+    Cuenta) — no hay forma de tocar el de otro usuario desde aquí. El correo
+    y el rol NO se editan por esta vía: el correo es la identidad de acceso
+    (ver docstring de UserOut en schemas), y el rol lo cambia un owner/admin
+    desde /users/{user_id}.
+    """
+    updates = data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(current, field, value)
+    db.commit()
+    db.refresh(current)
+    return current
+
+
+@router.post("/me/password", status_code=204)
+def change_my_password(
+    data: PasswordChange,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Exige la contraseña ACTUAL, no solo la sesión — un token robado (o una
+    laptop desbloqueada) no debería alcanzar para tomar la cuenta."""
+    if not verify_password(data.current_password, current.hashed_password):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "La contraseña actual no es correcta")
+    current.hashed_password = hash_password(data.new_password)
+    db.commit()
 
 
 def _primary_owner_id(org_id: int, db: Session) -> int | None:

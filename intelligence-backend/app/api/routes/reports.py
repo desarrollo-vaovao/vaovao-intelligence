@@ -37,6 +37,7 @@ from app.schemas import (
     CheckAccessResult,
     ReportJobCreated,
     ReportJobStatus,
+    ATTRIBUTION_WINDOWS,
 )
 from app.services import meta_api, report_builder
 from app.services.meta_tokens import resolve_tokens
@@ -74,12 +75,13 @@ async def _run_report_job(
     job_id: str, account: AdAccount, tokens: list[str],
     date_from, date_to, budget, currency: str, country_code: str | None = None,
     source_currency: str = "USD", exchange_rate: float | None = None,
+    attribution_window: str | None = None,
 ) -> None:
     try:
         async with _generation_semaphore:
             pdf_bytes, filename = await report_builder.build_pdf(
                 account, tokens, date_from, date_to, budget, currency, country_code,
-                source_currency, exchange_rate,
+                source_currency, exchange_rate, attribution_window,
             )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
@@ -113,15 +115,15 @@ def _get_owned_account(account_id: int, current: User, db: Session) -> AdAccount
 
 async def _resolve_currency_context(
     account: AdAccount, tokens: list[str], current: User, db: Session
-) -> tuple[str, float | None]:
+) -> tuple[str, float | None, str | None]:
     """
-    (moneda_de_origen, tipo_de_cambio_de_la_organizacion) para convertir el
-    reporte de esta cuenta. Si `account.native_currency` todavia no se
-    conoce (cuenta creada antes de este campo, o la consulta a Meta falló
-    en su momento), se intenta una vez aquí y se persiste para la próxima
-    — así el costo de la consulta a Meta se paga una sola vez por cuenta,
-    no en cada reporte. Si vuelve a fallar, se asume "USD" (lo más común)
-    en vez de bloquear el reporte por esto.
+    (moneda_de_origen, tipo_de_cambio_de_la_organizacion, ventana_de_atribucion)
+    para convertir el reporte de esta cuenta. Si `account.native_currency`
+    todavia no se conoce (cuenta creada antes de este campo, o la consulta a
+    Meta falló en su momento), se intenta una vez aquí y se persiste para la
+    próxima — así el costo de la consulta a Meta se paga una sola vez por
+    cuenta, no en cada reporte. Si vuelve a fallar, se asume "USD" (lo más
+    común) en vez de bloquear el reporte por esto.
     """
     if account.native_currency is None:
         currency = await meta_api.get_account_currency_with_fallback(
@@ -132,7 +134,11 @@ async def _resolve_currency_context(
             db.commit()
 
     org = db.get(Organization, current.org_id)
-    return account.native_currency or "USD", org.exchange_rate_usd_gtq if org else None
+    return (
+        account.native_currency or "USD",
+        org.exchange_rate_usd_gtq if org else None,
+        org.attribution_window if org else None,
+    )
 
 
 def _meta_connected(org: Organization, db: Session) -> bool:
@@ -196,7 +202,9 @@ async def generate_report(
             "El motor de generación aún no está activo.",
         )
 
-    source_currency, exchange_rate = await _resolve_currency_context(account, tokens, current, db)
+    source_currency, exchange_rate, attribution_window = await _resolve_currency_context(
+        account, tokens, current, db
+    )
 
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {
@@ -209,7 +217,7 @@ async def generate_report(
     }
     asyncio.create_task(_run_report_job(
         job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value,
-        data.country_code, source_currency, exchange_rate,
+        data.country_code, source_currency, exchange_rate, attribution_window,
     ))
     return ReportJobCreated(job_id=job_id)
 
@@ -277,13 +285,15 @@ async def report_summary(
     if not tokens:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
-    source_currency, exchange_rate = await _resolve_currency_context(account, tokens, current, db)
+    source_currency, exchange_rate, attribution_window = await _resolve_currency_context(
+        account, tokens, current, db
+    )
 
     try:
         return await report_builder.build_report_data(
             account, tokens, data.date_from, data.date_to, data.budget,
             data.currency.value, data.country_code,
-            source_currency, exchange_rate,
+            source_currency, exchange_rate, attribution_window,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -334,10 +344,14 @@ async def get_available_countries(
     today = date.today()
     thirty_days_ago = today - timedelta(days=30)
 
+    org = db.get(Organization, current.org_id)
+    attribution_windows = ATTRIBUTION_WINDOWS.get(org.attribution_window if org else None)
+
     try:
         data = await meta_api.get_account_data_with_fallback(
             tokens, account.meta_ad_account_id,
-            thirty_days_ago.isoformat(), today.isoformat()
+            thirty_days_ago.isoformat(), today.isoformat(),
+            attribution_windows,
         )
     except meta_api.MetaApiError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")

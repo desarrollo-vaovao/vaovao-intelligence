@@ -53,6 +53,8 @@ export const api = {
   listUsers: () => request("/users"),
   createUser: (body) => request("/users", { method: "POST", body }),
   updateUser: (id, body) => request(`/users/${id}`, { method: "PATCH", body }),
+  updateMyProfile: (body) => request("/users/me", { method: "PATCH", body }),
+  changeMyPassword: (body) => request("/users/me/password", { method: "POST", body }),
 
   getMeta: () => request("/organization/meta-credentials"),
   addMetaToken: (body) => request("/organization/meta-credentials", { method: "POST", body }),

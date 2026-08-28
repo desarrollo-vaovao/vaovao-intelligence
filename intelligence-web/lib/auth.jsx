@@ -30,8 +30,17 @@ export function AuthProvider({ children }) {
     router.push("/login");
   }, [router]);
 
+  // Tras editar el perfil en Ajustes (PATCH /users/me), refresca el `user`
+  // de este contexto sin recargar la página — si no, el nombre del avatar
+  // en el sidebar seguiría mostrando el valor viejo hasta el próximo login.
+  const refreshUser = useCallback(async () => {
+    const me = await api.me();
+    setUser(me);
+    return me;
+  }, []);
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, refreshUser }}>
       {children}
     </AuthCtx.Provider>
   );

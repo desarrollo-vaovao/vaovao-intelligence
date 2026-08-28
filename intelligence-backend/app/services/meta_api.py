@@ -281,6 +281,36 @@ async def get_account_currency_with_fallback(tokens: list[str], ad_account_id: s
     return None
 
 
+async def get_account_currency_and_timezone(token: str, ad_account_id: str) -> tuple[str | None, str | None]:
+    """
+    Moneda Y zona horaria de la cuenta, en UNA sola llamada a Meta (mismo
+    endpoint que get_account_currency, un campo más no cuesta una petición
+    aparte). La zona horaria es la que Meta usa de verdad para agrupar
+    insights "por día" — no se puede pedir otra, así que vale la pena
+    guardarla para mostrarla (ver ad_accounts.timezone_name).
+
+    Nunca lanza, igual que get_account_currency: (None, None) si el token no
+    tiene acceso o la petición falla.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            data = await _get(client, ad_account_id, token, {"fields": "currency,timezone_name"})
+        return data.get("currency"), data.get("timezone_name")
+    except (MetaApiError, httpx.HTTPError, httpx.InvalidURL):
+        return None, None
+
+
+async def get_account_currency_and_timezone_with_fallback(
+    tokens: list[str], ad_account_id: str
+) -> tuple[str | None, str | None]:
+    """Igual que get_account_currency_and_timezone, probando varios tokens en orden."""
+    for token in tokens:
+        currency, timezone_name = await get_account_currency_and_timezone(token, ad_account_id)
+        if currency or timezone_name:
+            return currency, timezone_name
+    return None, None
+
+
 async def get_campaigns(client: httpx.AsyncClient, token: str, ad_account_id: str) -> list[dict]:
     """Todas las campañas (activas y pausadas) de una cuenta, con su info básica."""
     return await _get_all(client, f"{ad_account_id}/campaigns", token, {
@@ -313,7 +343,8 @@ def _extract_countries_from_targeting(targeting: dict | None) -> list[str]:
 
 
 async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
-                                         date_from: str, date_to: str) -> dict:
+                                         date_from: str, date_to: str,
+                                         attribution_windows: list[str] | None = None) -> dict:
     """
     Igual que get_account_data, pero prueba varios tokens en orden (p. ej. el
     Facebook personal del usuario y, si a ESA cuenta le falta acceso, el token
@@ -324,7 +355,7 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
     last_error: MetaApiError | None = None
     for token in tokens:
         try:
-            return await get_account_data(token, ad_account_id, date_from, date_to)
+            return await get_account_data(token, ad_account_id, date_from, date_to, attribution_windows)
         except MetaApiError as e:
             last_error = e
     assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
@@ -332,7 +363,8 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
 
 
 async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token: str,
-                            level: str, fields: list[str], time_range: str) -> list[dict]:
+                            level: str, fields: list[str], time_range: str,
+                            attribution_windows: list[str] | None = None) -> list[dict]:
     """
     Pide los insights de TODA la cuenta (para un `level` dado) por la vía
     ASÍNCRONA de Meta: se crea un job en segundo plano (POST), se espera a
@@ -347,12 +379,21 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
     específicamente para exportar volúmenes grandes: no tiene la restricción
     síncrona de tamaño de respuesta, y es UNA sola consulta por cuenta sin
     importar cuántas campañas/anuncios tenga.
+
+    `attribution_windows` (ej. ["7d_click", "1d_view"]) es la ventana de
+    atribución de la organización (Ajustes > Preferencias de reporte, ver
+    schemas.ATTRIBUTION_WINDOWS). None/vacío = no se manda el parámetro y
+    Meta usa el default de CADA cuenta publicitaria, que es como se
+    comportaba esto antes de que existiera esta preferencia.
     """
-    creation = await _post(client, f"{ad_account_id}/insights", token, {
+    params = {
         "level": level,
         "fields": ",".join(fields),
         "time_range": time_range,
-    })
+    }
+    if attribution_windows:
+        params["action_attribution_windows"] = json.dumps(attribution_windows)
+    creation = await _post(client, f"{ad_account_id}/insights", token, params)
     report_run_id = creation.get("report_run_id")
     if not report_run_id:
         raise MetaApiError("Meta no devolvió un identificador de job para los insights.")
@@ -379,7 +420,8 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
     return await _get_all(client, f"{report_run_id}/insights", token, {"limit": _PAGE_SIZE})
 
 
-async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str) -> dict:
+async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
+                           attribution_windows: list[str] | None = None) -> dict:
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
@@ -407,9 +449,11 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
         campaign_insights, ad_insights, ads = await asyncio.gather(
             perf.timed("Meta · insights de campañas", _labeled("Insights de campañas", _run_insights_job(
                 client, ad_account_id, token, "campaign", ["campaign_id"] + api_fields, time_range,
+                attribution_windows,
             ))),
             perf.timed("Meta · insights de anuncios", _labeled("Insights de anuncios", _run_insights_job(
                 client, ad_account_id, token, "ad", ["ad_id"] + api_fields, time_range,
+                attribution_windows,
             ))),
             perf.timed("Meta · listado de anuncios", _labeled("Listado de anuncios", _get_all(
                 client, f"{ad_account_id}/ads", token, {

@@ -73,3 +73,57 @@ def test_no_afecta_a_otra_organizacion(client, login, tenant_a, tenant_b):
     respuesta = client.get("/organization/settings")
 
     assert respuesta.json()["exchange_rate_usd_gtq"] is None
+
+
+# ── Ventana de atribución (Ajustes > Preferencias de reporte) ─────
+# Mismo RBAC que el tipo de cambio y por la misma razón: cambia los números
+# que ve TODO el equipo en cada reporte, no es una preferencia personal.
+
+
+def test_atribucion_sin_configurar_devuelve_null(client, login, tenant_a):
+    login(tenant_a.owner)
+    assert client.get("/organization/settings").json()["attribution_window"] is None
+
+
+def test_owner_puede_configurar_la_atribucion(client, login, tenant_a):
+    login(tenant_a.owner)
+    r = client.patch("/organization/settings", json={"attribution_window": "7d_click"})
+    assert r.status_code == 200
+    assert r.json()["attribution_window"] == "7d_click"
+    assert client.get("/organization/settings").json()["attribution_window"] == "7d_click"
+
+
+def test_member_no_puede_configurar_la_atribucion(client, login, tenant_a):
+    login(tenant_a.member)
+    r = client.patch("/organization/settings", json={"attribution_window": "7d_click"})
+    assert r.status_code == 403
+
+
+def test_ventana_de_atribucion_invalida_se_rechaza(client, login, tenant_a):
+    """Solo las que report_builder sabe traducir a parámetros reales de
+    Meta (ver schemas.ATTRIBUTION_WINDOWS) — cualquier otra cosa se
+    rechaza en vez de mandarse tal cual a la API de Meta."""
+    login(tenant_a.owner)
+    r = client.patch("/organization/settings", json={"attribution_window": "30d_click"})
+    assert r.status_code == 422
+
+
+def test_cambiar_solo_la_atribucion_no_borra_el_tipo_de_cambio(client, login, tenant_a):
+    """PATCH es parcial: cada preferencia se cambia en su propio momento sin
+    que el frontend tenga que conocer siempre el valor actual de la otra."""
+    login(tenant_a.owner)
+    client.patch("/organization/settings", json={"exchange_rate_usd_gtq": 7.75})
+
+    r = client.patch("/organization/settings", json={"attribution_window": "1d_click"})
+
+    assert r.status_code == 200
+    assert r.json()["exchange_rate_usd_gtq"] == 7.75
+    assert r.json()["attribution_window"] == "1d_click"
+
+
+def test_atribucion_no_se_filtra_entre_organizaciones(client, login, tenant_a, tenant_b):
+    login(tenant_a.owner)
+    client.patch("/organization/settings", json={"attribution_window": "7d_click_1d_view"})
+
+    login(tenant_b.owner)
+    assert client.get("/organization/settings").json()["attribution_window"] is None

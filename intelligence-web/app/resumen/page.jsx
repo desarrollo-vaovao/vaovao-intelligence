@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Shell from "@/lib/Shell";
+import { useAuth } from "@/lib/auth";
 import { useClient } from "@/lib/clients";
 import { api } from "@/lib/api";
 import DateRangePicker, { periodoQuincenal } from "@/lib/DateRangePicker";
@@ -27,6 +28,7 @@ function flattenCampaigns(summary) {
 
 export default function ResumenPage() {
   const { client, loading: clientLoading } = useClient() || {};
+  const { user } = useAuth() || {};
   const exchangeRate = useExchangeRate();
 
   const [dateFrom, setDateFrom] = useState("");
@@ -44,6 +46,20 @@ export default function ResumenPage() {
     setBudget(localStorage.getItem(BUDGET_KEY) || "");
     setCurrency(localStorage.getItem(CURRENCY_KEY) || "USD");
   }, []);
+
+  // La moneda con la que abre esta pantalla la primera vez: si la persona
+  // ya la cambió antes (queda en localStorage, arriba), esa gana siempre.
+  // Solo aplica la de su perfil (Ajustes) cuando todavía no hay nada
+  // guardado — y solo la primera vez que el usuario carga, para no pisar
+  // un cambio que haga en esta misma sesión.
+  const aplicoMonedaDefault = useRef(false);
+  useEffect(() => {
+    if (aplicoMonedaDefault.current || !user) return;
+    aplicoMonedaDefault.current = true;
+    if (!localStorage.getItem(CURRENCY_KEY) && user.default_currency) {
+      setCurrency(user.default_currency);
+    }
+  }, [user]);
 
   // El backend reporta por activo comercial (ad_account_id), no por
   // cliente — ver el mismo ajuste ya hecho en reportes/page.jsx. Un

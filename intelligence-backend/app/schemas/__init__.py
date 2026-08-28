@@ -33,6 +33,55 @@ class UserOut(BaseModel):
     full_name: str
     role: UserRole
     is_active: bool
+    job_title: str | None = None
+    default_currency: str | None = None
+    default_cadence: str | None = None
+
+
+# Cadencias válidas para User.default_cadence — mismos valores que ya usa el
+# selector de tipo de reporte ("personalizado" no aplica como default: es
+# un estado transitorio de cuando alguien edita las fechas a mano).
+CADENCIAS_VALIDAS = ("quincenal", "mensual")
+
+# Monedas que la app sabe convertir hoy (ver report_builder). Si algún día
+# se agrega una tercera, este es el único lugar que hay que tocar aquí.
+MONEDAS_VALIDAS = ("USD", "GTQ")
+
+
+class ProfileUpdate(BaseModel):
+    """PATCH /users/me — cada quien edita su propio perfil, no el de otros."""
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    job_title: str | None = Field(default=None, max_length=120)
+    default_currency: str | None = None
+    default_cadence: str | None = None
+
+    @field_validator("job_title")
+    @classmethod
+    def _job_title_vacio_es_none(cls, v: str | None) -> str | None:
+        # Un input vacío en el frontend manda "", no null — sin esto,
+        # "borrar el cargo" guardaría la cadena vacía en vez de limpiarlo.
+        return v.strip() or None if v is not None else None
+
+    @field_validator("default_currency")
+    @classmethod
+    def _moneda_valida(cls, v: str | None) -> str | None:
+        if v is not None and v not in MONEDAS_VALIDAS:
+            raise ValueError(f"Moneda inválida. Usa una de: {', '.join(MONEDAS_VALIDAS)}")
+        return v
+
+    @field_validator("default_cadence")
+    @classmethod
+    def _cadencia_valida(cls, v: str | None) -> str | None:
+        if v is not None and v not in CADENCIAS_VALIDAS:
+            raise ValueError(f"Cadencia inválida. Usa una de: {', '.join(CADENCIAS_VALIDAS)}")
+        return v
+
+
+class PasswordChange(BaseModel):
+    """POST /users/me/password — exige la actual para confirmar identidad,
+    no solo la sesión (un token robado no alcanza para tomar la cuenta)."""
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class UserCreate(BaseModel):
@@ -81,17 +130,46 @@ class MetaCredentialsStatus(BaseModel):
     undecryptable_count: int = 0
 
 
+# Ventanas de atribución que ofrece Ajustes > Preferencias de reporte, y a
+# qué lista de valores de Meta (action_attribution_windows) traduce cada
+# una. None/"default" = no se manda el parámetro y Meta usa el default de
+# cada cuenta publicitaria (el comportamiento de hoy). Vive aquí, no en
+# meta_api, porque es la organización quien la elige (Ajustes) y es lo que
+# valida OrganizationSettingsUpdate — meta_api solo consume el resultado.
+ATTRIBUTION_WINDOWS: dict[str, list[str]] = {
+    "1d_click": ["1d_click"],
+    "7d_click": ["7d_click"],
+    "7d_click_1d_view": ["7d_click", "1d_view"],
+}
+
+
 class OrganizationSettings(BaseModel):
     """
-    Preferencias de la organización (Ajustes > General). `exchange_rate_usd_gtq`
-    es None mientras nadie lo haya configurado — el frontend debe mostrar
-    ese caso como "sin configurar", no como 0.
+    Preferencias de la organización (Ajustes > Preferencias de reporte).
+    `exchange_rate_usd_gtq` y `attribution_window` son None mientras nadie
+    los haya configurado — el frontend debe mostrar ese caso como "sin
+    configurar", nunca como 0 o como "sin atribución".
     """
     exchange_rate_usd_gtq: float | None = None
+    attribution_window: str | None = None
 
 
 class OrganizationSettingsUpdate(BaseModel):
-    exchange_rate_usd_gtq: float = Field(gt=0)
+    """
+    Parcial a propósito: el tipo de cambio y la atribución los puede
+    cambiar la misma persona en momentos distintos, y mandar el campo que
+    no se toca de vuelta obligaría al frontend a conocer siempre el valor
+    actual del otro.
+    """
+    exchange_rate_usd_gtq: float | None = Field(default=None, gt=0)
+    attribution_window: str | None = None
+
+    @field_validator("attribution_window")
+    @classmethod
+    def _ventana_valida(cls, v: str | None) -> str | None:
+        if v is not None and v not in ATTRIBUTION_WINDOWS:
+            raise ValueError(f"Ventana de atribución inválida. Usa una de: {', '.join(ATTRIBUTION_WINDOWS)}")
+        return v
 
 
 # ── Reportes (módulo preparado, se activa al conectar Meta) ────
@@ -176,6 +254,9 @@ class AdAccountOut(BaseModel):
     label: str
     meta_ad_account_id: str
     recipient_emails: list[str]
+    # Puramente informativo (ver ad_accounts.timezone_name). None hasta que
+    # se agregue o edite el activo, que es cuando se resuelve contra Meta.
+    timezone_name: str | None = None
 
 
 # ── Client ────────────────────────────────────────────────────

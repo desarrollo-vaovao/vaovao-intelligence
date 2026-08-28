@@ -152,9 +152,13 @@ def get_settings(
     db: Session = Depends(get_db),
 ):
     """Cualquier usuario autenticado puede LEER las preferencias de su
-    organización (las necesita para generar reportes en GTQ)."""
+    organización (las necesita para generar reportes en GTQ, y para saber
+    con qué ventana de atribución está reportando todo el equipo)."""
     org = db.get(Organization, current.org_id)
-    return OrganizationSettings(exchange_rate_usd_gtq=org.exchange_rate_usd_gtq)
+    return OrganizationSettings(
+        exchange_rate_usd_gtq=org.exchange_rate_usd_gtq,
+        attribution_window=org.attribution_window,
+    )
 
 
 @router.patch("/settings", response_model=OrganizationSettings)
@@ -163,9 +167,19 @@ def update_settings(
     current: User = Depends(require_roles(UserRole.owner, UserRole.admin)),
     db: Session = Depends(get_db),
 ):
-    """Solo owner/admin pueden CAMBIAR el tipo de cambio — afecta el gasto
-    en GTQ que ve todo el equipo, no es una preferencia personal."""
+    """
+    Solo owner/admin pueden CAMBIAR estos valores — afectan el gasto en GTQ
+    y las conversiones que ve todo el equipo, no son una preferencia
+    personal. Parcial: solo se tocan los campos que vienen en el body.
+    """
     org = db.get(Organization, current.org_id)
-    org.exchange_rate_usd_gtq = data.exchange_rate_usd_gtq
+    data_dict = data.model_dump(exclude_unset=True)
+    if "exchange_rate_usd_gtq" in data_dict:
+        org.exchange_rate_usd_gtq = data_dict["exchange_rate_usd_gtq"]
+    if "attribution_window" in data_dict:
+        org.attribution_window = data_dict["attribution_window"]
     db.commit()
-    return OrganizationSettings(exchange_rate_usd_gtq=org.exchange_rate_usd_gtq)
+    return OrganizationSettings(
+        exchange_rate_usd_gtq=org.exchange_rate_usd_gtq,
+        attribution_window=org.attribution_window,
+    )
