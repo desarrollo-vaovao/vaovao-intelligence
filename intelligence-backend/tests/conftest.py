@@ -42,6 +42,13 @@ import os
 os.environ["ENVIRONMENT"] = "development"
 os.environ["LEADS_SYNC_TOKEN"] = "token-de-pruebas-no-usar-en-produccion"
 os.environ["SECRET_KEY"] = "clave-de-pruebas-solo-para-firmar-jwt-en-tests"
+# Fernet válida de pruebas (crypto.encrypt/decrypt para tokens de Meta). Se
+# fija aquí, y NO con setdefault, para que un .env local con una llave real
+# nunca enmascare un bug que solo aparece cuando ENCRYPTION_KEY falta —
+# pasó exactamente eso: una prueba pasaba en local (con la llave del .env
+# del desarrollador) y fallaba en CI (sin .env) con 503 en vez del 201
+# esperado, porque crypto.keys() no tenía ninguna llave configurada.
+os.environ["ENCRYPTION_KEY"] = "e47BNVRrIu4ESbBSqp3eEOD74HzFPkLMFBE7RLFHUf4="
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 
