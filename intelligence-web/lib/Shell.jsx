@@ -38,17 +38,6 @@ const NAV = [
     ),
   },
   {
-    href: "/clientes", label: "Clientes",
-    icon: (
-      <>
-        <circle cx="9" cy="9" r="3.4"></circle>
-        <path d="M3.5 19c.6-3.2 2.9-4.8 5.5-4.8s4.9 1.6 5.5 4.8"></path>
-        <circle cx="17.5" cy="10" r="2.4"></circle>
-        <path d="M16 14.6c2.4-.3 4.2 1.1 4.5 4.4"></path>
-      </>
-    ),
-  },
-  {
     href: "/reportes", label: "Reportes",
     icon: (
       <>
@@ -59,24 +48,19 @@ const NAV = [
       </>
     ),
   },
+];
+
+// Fuera del menú principal: viven en el desplegable del avatar (arriba a
+// la derecha), no en el riel de navegación. Orden: Usuarios (solo owner,
+// gestiona gente) → Ajustes (incluye Conexión Meta como pestaña) →
+// Clientes → Cerrar sesión (esta última ya está fija en el JSX del menú).
+const ACCOUNT_MENU = [
   {
-    href: "/usuarios", label: "Usuarios", roles: ["owner", "admin"],
+    href: "/usuarios", label: "Usuarios", roles: ["owner"],
     icon: (
       <>
         <circle cx="12" cy="8" r="3.6"></circle>
         <path d="M5 20c.8-3.9 3.6-5.8 7-5.8s6.2 1.9 7 5.8"></path>
-      </>
-    ),
-  },
-  {
-    href: "/conexion", label: "Conexión Meta", roles: ["owner", "admin"],
-    icon: (
-      <>
-        <circle cx="7" cy="12" r="3.2"></circle>
-        <circle cx="17" cy="7" r="2.6"></circle>
-        <circle cx="17" cy="17" r="2.6"></circle>
-        <path d="M9.8 10.6 14.5 8.2"></path>
-        <path d="M9.8 13.4l4.7 2.4"></path>
       </>
     ),
   },
@@ -86,6 +70,17 @@ const NAV = [
       <>
         <circle cx="12" cy="12" r="3"></circle>
         <path d="M12 3v2.4M12 18.6V21M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M3 12h2.4M18.6 12H21M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"></path>
+      </>
+    ),
+  },
+  {
+    href: "/clientes", label: "Clientes",
+    icon: (
+      <>
+        <circle cx="9" cy="9" r="3.4"></circle>
+        <path d="M3.5 19c.6-3.2 2.9-4.8 5.5-4.8s4.9 1.6 5.5 4.8"></path>
+        <circle cx="17.5" cy="10" r="2.4"></circle>
+        <path d="M16 14.6c2.4-.3 4.2 1.1 4.5 4.4"></path>
       </>
     ),
   },
@@ -156,6 +151,7 @@ export default function Shell({ children }) {
   }
 
   const items = NAV.filter((n) => !n.roles || n.roles.includes(user.role));
+  const accountItems = ACCOUNT_MENU.filter((n) => !n.roles || n.roles.includes(user.role));
   const totalAccounts = (clients || []).reduce((n, c) => n + (c.ad_accounts?.length || 0), 0);
   const initials = (user.full_name || "").split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
@@ -238,6 +234,13 @@ export default function Shell({ children }) {
                     <span className="badge badge-role" style={{ marginTop: 8, display: "inline-flex" }}>{user.role}</span>
                   </div>
                   <div style={{ height: 1, background: "var(--border)", margin: "0 4px 6px" }}></div>
+                  {accountItems.map((n) => (
+                    <Link key={n.href} href={n.href} className="switcher-item" onClick={() => setUserMenuOpen(false)}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" style={{ flex: "none" }}>{n.icon}</svg>
+                      {n.label}
+                    </Link>
+                  ))}
+                  <div style={{ height: 1, background: "var(--border)", margin: "6px 4px" }}></div>
                   <button type="button" className="switcher-item" onClick={logout} style={{ color: "var(--error)" }}>Cerrar sesión</button>
                 </div>
               )}
