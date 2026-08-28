@@ -178,7 +178,7 @@ export default function ReportesPage() {
             </div>
           )}
 
-          {accountId && countries.length > 0 && (
+          {accountId && (
             <div className="field">
               <label>País (opcional)</label>
               <select
@@ -187,7 +187,9 @@ export default function ReportesPage() {
                 onChange={(e) => setCountryCode(e.target.value)}
                 disabled={loadingCountries}
               >
-                <option value="">— Todos los países —</option>
+                <option value="">
+                  {loadingCountries ? "Cargando países…" : "— Todos los países —"}
+                </option>
                 {countries.map((country) => (
                   <option key={country} value={country}>
                     {country}
