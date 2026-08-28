@@ -7,7 +7,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Chromium + sus dependencias de sistema, en la misma imagen (build == runtime,
 # así no hay que sincronizar paquetes apt entre etapas de build y deploy).
-RUN playwright install --with-deps chromium
+#
+# "chromium-headless-shell" además de "chromium": desde que Playwright
+# separó los dos binarios, chromium.launch() sin channel= explícito resuelve
+# por defecto al headless-shell (más liviano) en vez del chromium completo,
+# aunque el código nunca lo pida por nombre. requirements.txt fija
+# `playwright>=1.40` sin techo, así que un build en fecha distinta puede
+# traer una versión que ya hizo ese cambio - instalar ambos binarios cubre
+# cualquiera de los dos sin tener que fijar la versión exacta de playwright
+# ni tocar el .launch() de app/services/browser_pool.py.
+RUN playwright install --with-deps chromium chromium-headless-shell
 
 COPY . .
 
