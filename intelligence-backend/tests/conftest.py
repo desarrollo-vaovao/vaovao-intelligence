@@ -131,7 +131,13 @@ def _postgres_container():
         yield None
         return
 
-    with PostgresContainer("postgres:16-alpine", driver="psycopg2") as container:
+    # Imagen Debian, NO -alpine: la variante alpine corre sobre musl, que no
+    # trae locales ICU/glibc completas y por eso `initdb` la deja en "C" —
+    # ahí ILIKE sólo pliega mayúsculas ASCII, la MISMA limitación que
+    # test_busqueda_acentos.py existe para probar que Postgres no tiene.
+    # Se descubrió al fallar esa prueba en la primera corrida real contra
+    # este contenedor.
+    with PostgresContainer("postgres:16", driver="psycopg2") as container:
         yield container
 
 

@@ -62,11 +62,16 @@ def test_delete_sql_crudo_de_un_cliente_arrastra_sus_hijos_por_cascade_de_la_bas
     factory.audit(lead_dos, user=None)
     factory.ad_account(tenant_a.client)
     client_id = tenant_a.client.id
+    # Capturados ANTES del borrado: tras el DELETE + expire_all() de más abajo,
+    # `lead_uno`/`lead_dos` quedan expirados y su fila ya no existe, así que
+    # releer `.id` sobre ellos dispara un refresh que revienta con
+    # ObjectDeletedError en vez de dejar fallar limpiamente el assert.
+    lead_uno_id, lead_dos_id = lead_uno.id, lead_dos.id
 
     # Montaje real antes de actuar: si estos conteos fueran 0 los asertos de
     # abajo no comprobarían ninguna cascada, sólo un borrado vacío.
     assert _count(db, Lead, Lead.client_id == client_id) == 2
-    assert _count(db, LeadAudit, LeadAudit.lead_id.in_([lead_uno.id, lead_dos.id])) == 2
+    assert _count(db, LeadAudit, LeadAudit.lead_id.in_([lead_uno_id, lead_dos_id])) == 2
     assert _count(db, ClientPage, ClientPage.client_id == client_id) == 1
     assert _count(db, AdAccount, AdAccount.client_id == client_id) == 1
 
@@ -86,7 +91,7 @@ def test_delete_sql_crudo_de_un_cliente_arrastra_sus_hijos_por_cascade_de_la_bas
         "la base NO se llevó los leads del cliente borrado: el ON DELETE "
         "CASCADE de leads.client_id no está aplicado en el esquema real."
     )
-    assert _count(db, LeadAudit, LeadAudit.lead_id.in_([lead_uno.id, lead_dos.id])) == 0, (
+    assert _count(db, LeadAudit, LeadAudit.lead_id.in_([lead_uno_id, lead_dos_id])) == 0, (
         "la bitácora sobrevivió a sus leads borrados: la cascada encadenada "
         "leads -> lead_audits no llegó hasta el final en la base."
     )
