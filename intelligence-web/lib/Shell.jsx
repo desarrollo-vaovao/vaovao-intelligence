@@ -99,8 +99,6 @@ const LABELS = {
   "/ajustes": "Ajustes",
 };
 
-const CURRENCY_KEY = "vv_currency";
-
 export default function Shell({ children }) {
   const { user, loading, logout } = useAuth();
   const clientCtx = useClient() || {};
@@ -111,7 +109,6 @@ export default function Shell({ children }) {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [switcherPos, setSwitcherPos] = useState({ top: 0, left: 0 });
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [currency, setCurrency] = useState("USD");
   const switcherRef = useRef(null);
   const userMenuRef = useRef(null);
 
@@ -133,10 +130,6 @@ export default function Shell({ children }) {
   }, [loading, user, router]);
 
   useEffect(() => {
-    setCurrency(localStorage.getItem(CURRENCY_KEY) || "USD");
-  }, []);
-
-  useEffect(() => {
     function onClickOutside(e) {
       if (switcherRef.current && !switcherRef.current.contains(e.target)) setSwitcherOpen(false);
       if (userMenuRef.current && !userMenuRef.current.contains(e.target)) setUserMenuOpen(false);
@@ -144,11 +137,6 @@ export default function Shell({ children }) {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
-
-  function pickCurrency(next) {
-    setCurrency(next);
-    localStorage.setItem(CURRENCY_KEY, next);
-  }
 
   if (loading || !user) {
     return <div style={{ display: "grid", placeItems: "center", height: "100vh", color: "var(--muted)" }}>Cargando…</div>;
@@ -203,10 +191,6 @@ export default function Shell({ children }) {
         <header className="header-bar">
           <span className="header-crumb">{LABELS[pathname] || ""}</span>
           <div className="header-actions">
-            <div className="currency-toggle">
-              <button type="button" className={currency === "USD" ? "active" : ""} onClick={() => pickCurrency("USD")}>$ USD</button>
-              <button type="button" className={currency === "GTQ" ? "active" : ""} onClick={() => pickCurrency("GTQ")}>Q GTQ</button>
-            </div>
             <button type="button" className="bell-btn" title="Notificaciones">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M18 9a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"></path><path d="M10.5 20a2 2 0 0 0 3 0"></path></svg>
             </button>
