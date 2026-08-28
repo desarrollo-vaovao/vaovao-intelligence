@@ -47,14 +47,23 @@ def _status(org: Organization, db: Session) -> MetaCredentialsStatus:
             tokens.append(MetaCentralTokenOut(
                 id=row.id, label=row.label,
                 token_masked=crypto.mask(token), created_at=row.created_at,
+                readable=True,
             ))
         else:
             # No descifra (típicamente ENCRYPTION_KEY distinta a la que se usó
-            # para guardarlo) — se cuenta aparte para no ocultar que el dato
-            # sigue ahí, solo que la llave no coincide.
+            # para guardarlo). Se devuelve igual, marcada como ilegible, para
+            # que la UI la muestre y ofrezca borrarla: antes solo se contaba,
+            # así que la fila quedaba invisible, inservible y sin forma de
+            # quitarla desde la aplicación.
             undecryptable += 1
+            tokens.append(MetaCentralTokenOut(
+                id=row.id, label=row.label,
+                token_masked="", created_at=row.created_at,
+                readable=False,
+            ))
     return MetaCredentialsStatus(
-        configured=len(tokens) > 0,
+        # Un token ilegible no conecta con nada, así que no cuenta aquí.
+        configured=any(t.readable for t in tokens),
         tokens=tokens,
         undecryptable_count=undecryptable,
     )

@@ -23,7 +23,7 @@ from app.api.routes import (
     facebook,
     leads,
 )
-from app.services import assets, browser_pool
+from app.services import assets, browser_pool, crypto_check
 
 # Importa todos los modelos de una vez. Ya no es para `create_all` (ver el
 # lifespan), pero sigue haciendo falta: las `relationship()` se declaran con el
@@ -66,11 +66,12 @@ async def _precargar(nombre: str, tarea) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Al arrancar: levanta el navegador compartido para generar PDFs
-    (ver app/services/browser_pool.py — evita lanzar un Chromium nuevo por
-    cada reporte) y precarga la tipografía del reporte (ver
-    app/services/assets.py — así ni el primer reporte tras un despliegue
-    espera a que baje Poppins).
+    Al arrancar: revisa que la llave de cifrado siga leyendo las credenciales
+    guardadas (ver app/services/crypto_check.py), levanta el navegador
+    compartido para generar PDFs (ver app/services/browser_pool.py — evita
+    lanzar un Chromium nuevo por cada reporte) y precarga la tipografía del
+    reporte (ver app/services/assets.py — así ni el primer reporte tras un
+    despliegue espera a que baje Poppins).
 
     Las dos van en segundo plano, no esperadas
     -----------------------------------------
@@ -100,6 +101,14 @@ async def lifespan(app: FastAPI):
     necesita `alembic upgrade head` una vez antes de arrancar. Es un comando
     más en el README contra una clase entera de derivas silenciosas.
     """
+    # Antes de nada: avisar si la llave de cifrado dejó de leer lo guardado.
+    # Va aquí para que salga en los logs del despliegue, cuando quien cambió
+    # la variable todavía puede deshacerlo (ver app/services/crypto_check.py).
+    # Sí se espera (a diferencia de las precargas de abajo) porque es el único
+    # momento útil para avisar, y no puede tumbar el arranque: se traga
+    # cualquier excepción a propósito — ver su docstring.
+    crypto_check.revisar_credenciales()
+
     precargas = [
         asyncio.create_task(_precargar("navegador para PDFs", browser_pool.start())),
         asyncio.create_task(_precargar("tipografía del reporte", assets.warm_font())),
