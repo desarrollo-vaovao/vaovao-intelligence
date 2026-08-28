@@ -39,6 +39,48 @@ def _get_owned_client(client_id: int, current: User, db: Session) -> Client:
     return client
 
 
+@router.get("/meta-adaccounts")
+async def list_meta_adaccounts(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Cuentas publicitarias de Meta visibles para agregar como activo comercial,
+    juntando TODOS los tokens disponibles (el Facebook personal del usuario y
+    cada token central de la organización — ver meta_tokens.resolve_tokens).
+
+    Es lo que alimenta el selector de "Agregar activo" en Clientes, para no
+    tener que copiar a mano el act_XXXXXXXXXX desde Business Manager. Sigue
+    existiendo el campo de texto como respaldo: una cuenta recién compartida
+    con Meta puede tardar en aparecer aquí, y una falla de red no debería
+    impedir agregar un activo si ya se conoce su ID.
+
+    Cualquier rol puede llamarla (igual que puede agregar un activo); a
+    diferencia de /organization/meta-credentials, esto NUNCA expone tokens,
+    solo nombres e IDs de cuentas publicitarias.
+    """
+    tokens, error = resolve_tokens(current, db)
+    if not tokens:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
+
+    # Un dict por id de cuenta: la misma cuenta puede aparecer vía más de un
+    # token (ej. acceso directo Y compartida con un portafolio), y la primera
+    # copia que llega gana — no hay nada que desempatar entre ellas.
+    merged: dict[str, dict] = {}
+    warnings: list[str] = []
+    for token in tokens:
+        try:
+            result = await meta_api.list_ad_accounts(token)
+        except meta_api.MetaApiError as e:
+            warnings.append(str(e))
+            continue
+        warnings.extend(result.get("warnings", []))
+        for acc in result.get("accounts", []):
+            acc_id = acc.get("id")
+            if acc_id and acc_id not in merged:
+                merged[acc_id] = acc
+
+    accounts = sorted(merged.values(), key=lambda a: (a.get("name") or "").lower())
+    return {"accounts": accounts, "warnings": warnings}
+
+
 @router.get("", response_model=list[ClientOut])
 def list_clients(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
     clients = db.scalars(

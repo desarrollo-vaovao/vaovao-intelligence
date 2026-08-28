@@ -37,6 +37,7 @@ export const api = {
   me: () => request("/auth/me"),
 
   listClients: () => request("/clients"),
+  listMetaAdAccounts: () => request("/clients/meta-adaccounts"),
   createClient: (body) => request("/clients", { method: "POST", body }),
   updateClient: (clientId, body) => request(`/clients/${clientId}`, { method: "PATCH", body }),
   deleteClient: (clientId) => request(`/clients/${clientId}`, { method: "DELETE" }),

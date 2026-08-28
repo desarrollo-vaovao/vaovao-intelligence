@@ -408,6 +408,20 @@ function AdAccountModal({ client, onClose, onDone }) {
   const [accId, setAccId] = useState("");
   const [emails, setEmails] = useState("");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+
+  // Lista de cuentas de Meta para elegir en vez de copiar act_XXXXXXXXXX a
+  // mano. Es un plus, no un requisito: si falla o viene vacía, el campo de
+  // abajo sigue aceptando el ID escrito directamente.
+  const [metaAccounts, setMetaAccounts] = useState(null); // null = cargando
+  const [metaError, setMetaError] = useState("");
+  const [modoManual, setModoManual] = useState(false);
+
+  useEffect(() => {
+    api.listMetaAdAccounts()
+      .then((r) => setMetaAccounts(r.accounts || []))
+      .catch((e) => { setMetaAccounts([]); setMetaError(e.message); });
+  }, []);
+
   async function save() {
     setErr(""); setBusy(true);
     const recipient_emails = emails.split(",").map((s) => s.trim()).filter(Boolean);
@@ -416,14 +430,48 @@ function AdAccountModal({ client, onClose, onDone }) {
       onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
+
+  const hayOpciones = Array.isArray(metaAccounts) && metaAccounts.length > 0;
+  const mostrarSelect = hayOpciones && !modoManual;
+
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Activo comercial — {client.name}</h2>
         {err && <div className="err">{err}</div>}
         <div className="field">
-          <label>ID de cuenta publicitaria</label>
-          <input className="input mono" value={accId} onChange={(e) => setAccId(e.target.value)} placeholder="act_1234567890" />
+          <label>Cuenta publicitaria</label>
+          {metaAccounts === null ? (
+            <input className="input" value="Cargando cuentas de Meta…" disabled readOnly />
+          ) : mostrarSelect ? (
+            <select className="input mono" value={accId} onChange={(e) => setAccId(e.target.value)}>
+              <option value="">— Selecciona una cuenta —</option>
+              {metaAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name ? `${a.name} — ${a.id}` : a.id}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input className="input mono" value={accId} onChange={(e) => setAccId(e.target.value)} placeholder="act_1234567890" />
+          )}
+          {hayOpciones && (
+            <button
+              type="button"
+              onClick={() => setModoManual((v) => !v)}
+              style={{
+                background: "none", border: "none", padding: 0, marginTop: 6,
+                color: "var(--orange)", fontSize: 12, cursor: "pointer",
+              }}
+            >
+              {modoManual ? "Elegir de la lista" : "No la encuentro, escribir el ID a mano"}
+            </button>
+          )}
+          {metaAccounts !== null && !hayOpciones && (
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+              {metaError || "No se encontraron cuentas conectadas a Meta — escribe el ID directamente."}
+            </div>
+          )}
           <NombreHeredadoNota />
         </div>
         <div className="field">
