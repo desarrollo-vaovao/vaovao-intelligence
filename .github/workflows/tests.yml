@@ -1,0 +1,49 @@
+name: Tests (backend)
+
+# Corre la suite de intelligence-backend contra PostgreSQL real, no contra
+# SQLite. Ver intelligence-backend/tests/conftest.py: con
+# USE_POSTGRES_CONTAINER=true, la fixture `engine` levanta un Postgres real
+# en Docker (testcontainers) en vez de un SQLite en memoria. Docker ya viene
+# instalado en los runners `ubuntu-latest` de GitHub, así que no hace falta
+# ningún `services:` aparte — testcontainers lo maneja solo, con el mismo
+# mecanismo que un developer usaría en su máquina para reproducir un fallo
+# de aquí.
+#
+# Por qué esto importa: cuatro huecos de la suite no se pueden cerrar
+# honestamente sobre SQLite (deriva modelo/migración, carreras reales de
+# `ingest_lead`, búsqueda insensible a acentos, ON DELETE CASCADE de la
+# base). Ver tests/test_migracion_vs_modelo.py, test_concurrencia_ingest_lead.py,
+# test_busqueda_acentos.py y test_cascada_real_bd.py.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: intelligence-backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            intelligence-backend/requirements.txt
+            intelligence-backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run test suite against PostgreSQL
+        env:
+          USE_POSTGRES_CONTAINER: "true"
+        run: pytest -v

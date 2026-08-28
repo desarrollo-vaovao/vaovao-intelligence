@@ -18,6 +18,18 @@ repetir:
 3. **Overrides limpios.** `get_db` y `get_current_user` se sustituyen por la
    duración de la prueba y se restauran al final, para que una prueba no
    herede el usuario autenticado de la anterior.
+
+4. **Postgres real, opcional.** Con `USE_POSTGRES_CONTAINER=true` la fixture
+   `engine` deja de ser SQLite en memoria y pasa a ser un PostgreSQL real
+   levantado en Docker (testcontainers), UNO SOLO para toda la sesión de
+   pruebas — cada prueba sigue recibiendo su propio esquema limpio, pero el
+   contenedor no se reinicia por prueba porque tardaría minutos en vez de
+   milisegundos. Es el modo que corre en CI (ver
+   .github/workflows/tests.yml) y el que hay que usar en local para
+   reproducir un fallo de CI: sin él, cuatro huecos quedan sin cubrir de
+   verdad (ver docstring de tests/test_migracion_vs_modelo.py,
+   tests/test_concurrencia_ingest_lead.py, tests/test_busqueda_acentos.py y
+   tests/test_cascada_real_bd.py).
 """
 from __future__ import annotations
 
@@ -33,6 +45,16 @@ os.environ["SECRET_KEY"] = "clave-de-pruebas-solo-para-firmar-jwt-en-tests"
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 
+# `USE_POSTGRES_CONTAINER=true` cambia la fixture `engine` de SQLite en
+# memoria a un PostgreSQL real en Docker. Se lee UNA vez aquí, a nivel de
+# módulo, para que valga lo mismo durante toda la sesión de pytest — nada
+# posterior debería releer el env var directamente.
+USE_POSTGRES_CONTAINER = os.environ.get("USE_POSTGRES_CONTAINER", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 from collections.abc import Iterator  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
@@ -46,6 +68,13 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from app.api.deps import get_current_user  # noqa: E402
 from app.core.database import Base, get_db  # noqa: E402
 from app.core.ratelimit import limiter  # noqa: E402
+
+if USE_POSTGRES_CONTAINER:
+    try:
+        # Ruta no deprecada desde testcontainers 4.x reciente.
+        from testcontainers.community.postgres import PostgresContainer  # noqa: E402
+    except ImportError:  # pragma: no cover - compat con testcontainers viejo
+        from testcontainers.postgres import PostgresContainer  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     AdAccount,
@@ -85,16 +114,67 @@ def enable_sqlite_foreign_keys(engine: Engine) -> None:
         cursor.close()
 
 
-@pytest.fixture()
-def engine() -> Iterator[Engine]:
-    """Un motor SQLite en memoria NUEVO por prueba.
+@pytest.fixture(scope="session")
+def _postgres_container():
+    """Un PostgreSQL real en Docker, UNO SOLO para toda la sesión de pytest.
 
-    Aislamiento por construcción: la base entera nace y muere con la prueba,
-    así que ninguna fila puede filtrarse a la siguiente ni el orden de
-    ejecución puede cambiar un resultado. `StaticPool` hace que todas las
-    sesiones compartan la MISMA conexión, que es lo que mantiene viva una base
-    `:memory:` (con el pool normal, cerrar la conexión la borraría).
+    Arrancar un container por prueba costaría varios segundos cada vez —
+    inaceptable para una suite de decenas de pruebas—; uno por sesión y una
+    base limpia por prueba (ver `engine`, que hace create_all/drop_all sobre
+    él) da el mismo aislamiento por una fracción del costo.
+
+    `None` cuando `USE_POSTGRES_CONTAINER` no está activo, para que todo lo
+    que dependa de esta fixture (incluida `engine`) pueda ramificar con un
+    simple `is not None` sin su propio `if` de entorno.
     """
+    if not USE_POSTGRES_CONTAINER:
+        yield None
+        return
+
+    with PostgresContainer("postgres:16-alpine", driver="psycopg2") as container:
+        yield container
+
+
+@pytest.fixture()
+def postgres_url(_postgres_container) -> str | None:
+    """URL de conexión al Postgres de la sesión, o `None` si no está activo.
+
+    La usan las pruebas que necesitan SUS PROPIAS conexiones —no la sesión
+    única que da la fixture `db`— para ejercitar de verdad dos transacciones
+    compitiendo (`test_concurrencia_ingest_lead.py`), comparar el esquema
+    migrado por Alembic contra `Base.metadata`
+    (`test_migracion_vs_modelo.py`), o forzar un DELETE en SQL crudo que
+    dispare el `ON DELETE CASCADE` de la base sin pasar por el ORM
+    (`test_cascada_real_bd.py`).
+    """
+    if _postgres_container is None:
+        return None
+    return _postgres_container.get_connection_url()
+
+
+@pytest.fixture()
+def engine(_postgres_container) -> Iterator[Engine]:
+    """Motor de pruebas: PostgreSQL real si `USE_POSTGRES_CONTAINER=true`,
+    SQLite en memoria si no (comportamiento histórico, sin cambios).
+
+    Aislamiento por construcción en ambos casos: el esquema se crea antes de
+    la prueba y se destruye después, así que ninguna fila puede filtrarse a
+    la siguiente ni el orden de ejecución puede cambiar un resultado.
+    """
+    if _postgres_container is not None:
+        # Motor real, con su pool normal (NO StaticPool): a diferencia de
+        # SQLite, aquí cada `Session` puede abrir su propia conexión de
+        # verdad, que es exactamente lo que hace falta para probar carreras
+        # entre entregas concurrentes (ver test_concurrencia_ingest_lead.py).
+        eng = create_engine(_postgres_container.get_connection_url(), pool_pre_ping=True)
+        Base.metadata.create_all(eng)
+        try:
+            yield eng
+        finally:
+            Base.metadata.drop_all(eng)
+            eng.dispose()
+        return
+
     eng = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -107,6 +187,27 @@ def engine() -> Iterator[Engine]:
     finally:
         Base.metadata.drop_all(eng)
         eng.dispose()
+
+
+@pytest.fixture()
+def require_postgres(postgres_url: str | None) -> str:
+    """Salta la prueba si no hay Postgres real (`USE_POSTGRES_CONTAINER=true`).
+
+    Las cuatro pruebas que cubren huecos honestos de SQLite (deriva
+    modelo/migración, carreras de `ingest_lead`, acentos, CASCADE real de la
+    base) NO pueden fingir un resultado sobre SQLite: o corren contra
+    Postgres de verdad, o se saltan con un motivo explícito. `pytest.skip`
+    y no un `xfail` ni un `assert True`, para que la corrida deje claro en
+    el resumen que esos cuatro huecos NO se comprobaron esta vez, en vez de
+    aparecer como si hubieran pasado.
+    """
+    if postgres_url is None:
+        pytest.skip(
+            "Requiere PostgreSQL real: corre con USE_POSTGRES_CONTAINER=true "
+            "(necesita Docker). Sobre SQLite este hueco no se puede cerrar "
+            "honestamente — ver docstring del módulo de la prueba."
+        )
+    return postgres_url
 
 
 @pytest.fixture()

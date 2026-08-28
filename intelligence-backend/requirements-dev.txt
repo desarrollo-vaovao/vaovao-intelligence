@@ -13,3 +13,13 @@
 #
 # Uso:  pip install -r requirements.txt -r requirements-dev.txt
 pytest>=8.3,<9.0
+
+# `testcontainers[postgres]`: levanta un PostgreSQL real en Docker para la
+# suite (ver tests/conftest.py, fixture `_postgres_container`). Existe porque
+# SQLite en memoria no puede probar honestamente cuatro cosas: la deriva entre
+# modelos y migraciones, las carreras de `ingest_lead` con conexiones
+# compitiendo de verdad, la búsqueda insensible a acentos, y el
+# ON DELETE CASCADE real de la base (no el que arma el ORM en Python). Se
+# activa con USE_POSTGRES_CONTAINER=true; sin esa variable, la suite sigue
+# corriendo en SQLite exactamente igual que antes.
+testcontainers[postgres]>=4.0
