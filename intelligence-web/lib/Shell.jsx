@@ -100,7 +100,6 @@ const LABELS = {
 };
 
 const CURRENCY_KEY = "vv_currency";
-const COLLAPSE_KEY = "vv_sidebar_collapsed";
 
 export default function Shell({ children }) {
   const { user, loading, logout } = useAuth();
@@ -110,18 +109,30 @@ export default function Shell({ children }) {
   const router = useRouter();
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [switcherPos, setSwitcherPos] = useState({ top: 0, left: 0 });
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const [currency, setCurrency] = useState("USD");
   const switcherRef = useRef(null);
   const userMenuRef = useRef(null);
+
+  // El sidebar recorta con overflow-x:hidden (necesario para que no crezca
+  // de mas al angostarse/expandirse) y en reposo mide solo 76px: un menu
+  // de 230px posicionado relativo a el quedaria cortado. Se calcula su
+  // posicion en coordenadas de pantalla y se ancla con position:fixed, que
+  // no es container del overflow del sidebar (no tiene transform/filter/
+  // contain), asi que el menu escapa del recorte sin importar si el
+  // sidebar esta angosto o expandido en ese momento.
+  function openSwitcher() {
+    const rect = switcherRef.current?.getBoundingClientRect();
+    if (rect) setSwitcherPos({ top: rect.bottom + 4, left: rect.left });
+    setSwitcherOpen((o) => !o);
+  }
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
   useEffect(() => {
-    setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
     setCurrency(localStorage.getItem(CURRENCY_KEY) || "USD");
   }, []);
 
@@ -134,13 +145,6 @@ export default function Shell({ children }) {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  function toggleCollapse() {
-    setCollapsed((c) => {
-      localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
-      return !c;
-    });
-  }
-
   function pickCurrency(next) {
     setCurrency(next);
     localStorage.setItem(CURRENCY_KEY, next);
@@ -152,12 +156,13 @@ export default function Shell({ children }) {
 
   const items = NAV.filter((n) => !n.roles || n.roles.includes(user.role));
   const accountItems = ACCOUNT_MENU.filter((n) => !n.roles || n.roles.includes(user.role));
-  const totalAccounts = (clients || []).reduce((n, c) => n + (c.ad_accounts?.length || 0), 0);
   const initials = (user.full_name || "").split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
   return (
-    <div className="shell" style={{ "--sidebar-w": collapsed ? "76px" : "230px" }}>
-      <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
+    <div className="shell">
+      {/* Angosto por defecto, se expande al pasar el cursor (:hover en CSS)
+          sin desplazar el contenido: position:fixed + overlay, ver globals.css */}
+      <aside className="sidebar">
         <div className="brand">
           <span className="brand-short">V</span>
           <span className="brand-full">VAO<span style={{ color: "var(--accent)" }}>VAO</span></span>
@@ -165,13 +170,13 @@ export default function Shell({ children }) {
         </div>
 
         <div className="sidebar-switcher" ref={switcherRef}>
-          <button type="button" className="switcher-btn" onClick={() => setSwitcherOpen((o) => !o)} title={client?.name || "Sin clientes"}>
+          <button type="button" className="switcher-btn" onClick={openSwitcher} title={client?.name || "Sin clientes"}>
             <span className="switcher-avatar">{client?.name?.[0]?.toUpperCase() || "–"}</span>
             <span className="switcher-name">{clientsLoading ? "Cargando…" : client?.name || "Sin clientes"}</span>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`switcher-caret${switcherOpen ? " open" : ""}`}><path d="m6 9 6 6 6-6"></path></svg>
           </button>
           {switcherOpen && (
-            <div className="switcher-menu">
+            <div className="switcher-menu" style={{ position: "fixed", top: switcherPos.top, left: switcherPos.left }}>
               {(clients || []).map((c) => (
                 <button type="button" key={c.id} className={`switcher-item${client?.id === c.id ? " active" : ""}`} onClick={() => { setClient(c); setSwitcherOpen(false); }}>
                   <span className="dot"></span>
@@ -192,18 +197,9 @@ export default function Shell({ children }) {
             </Link>
           ))}
         </nav>
-
-        <div className="sync-card">
-          <span className="dot"></span>Meta API conectada
-          <div style={{ marginTop: 4, color: "var(--muted2)" }}>{totalAccounts} cuenta{totalAccounts === 1 ? "" : "s"} en total</div>
-        </div>
-
-        <button type="button" className="collapse-btn" onClick={toggleCollapse} title={collapsed ? "Expandir" : "Colapsar"}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"></rect><path d="M12 4v16"></path></svg>
-        </button>
       </aside>
 
-      <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className="content-wrap" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
         <header className="header-bar">
           <span className="header-crumb">{LABELS[pathname] || ""}</span>
           <div className="header-actions">

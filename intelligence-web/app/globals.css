@@ -157,31 +157,44 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 .table tbody tr:hover td { background: var(--surface2); }
 
 /* ── Layout ── */
-.shell { display: grid; grid-template-columns: var(--sidebar-w, 230px) 1fr; min-height: 100vh; }
+/* El sidebar es angosto (76px) por defecto y crece al pasar el cursor
+   (ver .sidebar:hover más abajo). Es position:fixed a propósito: al
+   crecer, FLOTA sobre el contenido en vez de empujarlo — .content-wrap
+   reserva siempre los mismos 76px, sin importar si el sidebar está
+   expandido o no, así que nada del layout salta al pasar el mouse. */
+.shell { min-height: 100vh; }
+.content-wrap { margin-left: 76px; min-width: 0; }
 .sidebar {
   background: var(--surface); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; padding: 16px 12px;
-  position: sticky; top: 0; height: 100vh; overflow-y: auto; overflow-x: hidden;
+  position: fixed; top: 0; left: 0; z-index: 30;
+  width: 76px; height: 100vh; overflow-y: auto; overflow-x: hidden;
+  transition: width .15s ease, box-shadow .15s ease;
 }
+.sidebar:hover { width: 230px; box-shadow: 8px 0 24px rgba(0,0,0,.35); }
 .brand {
   font-size: 17px; font-weight: 600; letter-spacing: 2.5px; color: var(--text);
   padding: 12px 10px 20px; margin-bottom: 8px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
 }
+.sidebar:hover .brand { justify-content: flex-start; }
 .brand small {
-  display: block; font-size: 9px; color: var(--muted); letter-spacing: 1px;
+  display: none; font-size: 9px; color: var(--muted); letter-spacing: 1px;
   margin-top: 5px; text-transform: uppercase; font-weight: 500;
 }
 .nav-item {
-  display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding: 9px;
   border-radius: var(--radius-sm); font-size: 12px; color: var(--muted);
   cursor: pointer; transition: all .15s; margin-bottom: 2px;
 }
+.sidebar:hover .nav-item { justify-content: flex-start; padding: 9px 10px; }
 .nav-item:hover { background: var(--surface2); color: var(--text); }
 .nav-item.active { background: var(--surface2); color: var(--text); font-weight: 500; }
 .nav-item.active::before {
-  content: ""; width: 3px; height: 14px; border-radius: 2px;
+  content: ""; display: none; width: 3px; height: 14px; border-radius: 2px;
   background: var(--gradient); margin-left: -4px; margin-right: 4px;
 }
+.sidebar:hover .nav-item.active::before { display: block; }
 
 .main { padding: 36px 36px 60px; max-width: 940px; margin: 0 auto; width: 100%; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 26px; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
@@ -261,39 +274,58 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 }
 
 @media (max-width: 720px) {
-  .shell { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
-  .brand { padding: 4px 10px; border: none; margin: 0; }
+  /* Sin hover real en touch: el modo "angosto que se expande al pasar el
+     cursor" no aplica. Mobile se queda expandido siempre, como antes. */
+  .content-wrap { margin-left: 0; }
+  .sidebar {
+    position: static; width: auto; height: auto; flex-direction: row;
+    flex-wrap: wrap; align-items: center; box-shadow: none;
+  }
+  .brand { padding: 4px 10px; border: none; margin: 0; justify-content: flex-start; }
+  .brand-short { display: none; }
+  .brand-full, .brand small { display: block; }
+  .switcher-btn { justify-content: flex-start; }
+  .switcher-name, .switcher-caret { display: block; }
+  .nav-item { justify-content: flex-start; padding: 9px 10px; }
+  .nav-item span { display: inline; }
+  .nav-item.active::before { display: block; }
   .main { padding: 22px 18px; }
   .page-head { flex-direction: column; align-items: stretch; }
 }
 
-/* ── Sidebar: selector de cliente ── */
+/* ── Sidebar: selector de cliente ──
+   Angosto por defecto (solo el avatar, centrado); .sidebar:hover expande
+   todo lo demás (nombre, caret, menú). Mismo patrón que .nav-item arriba. */
 .sidebar-switcher { position: relative; padding: 12px 8px 4px; }
 .switcher-btn {
-  display: flex; align-items: center; gap: 10px; width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
   padding: 8px 9px; border-radius: 10px; cursor: pointer;
   background: var(--text); border: 1px solid transparent; text-align: left;
 }
+.sidebar:hover .switcher-btn { justify-content: flex-start; }
 .switcher-btn:hover { background: var(--text); opacity: .92; }
 .switcher-avatar {
   width: 26px; height: 26px; border-radius: 50%; background: var(--accent);
   color: var(--bg); display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 700; flex: none;
 }
-.switcher-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: var(--bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.switcher-caret { flex: none; transition: transform .15s; color: var(--bg); opacity: .6; }
+.switcher-name {
+  display: none; flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500;
+  color: var(--bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.switcher-caret { display: none; flex: none; transition: transform .15s; color: var(--bg); opacity: .6; }
+.sidebar:hover .switcher-name, .sidebar:hover .switcher-caret { display: block; }
 .switcher-caret.open { transform: rotate(180deg); }
+/* Ancho fijo propio, no relativo al padre: en reposo el sidebar mide
+   76px, y sin esto el menu heredaria ese ancho y "+ Nuevo cliente" se
+   partiria en dos lineas. 230px = el ancho del sidebar expandido, así
+   que al abrir el menu (con el cursor ya encima, hover activo) coincide
+   visualmente con el borde del sidebar. */
 .switcher-menu {
-  position: absolute; left: 8px; right: 8px; top: 100%; z-index: 40; margin-top: 4px;
+  position: absolute; left: 8px; right: auto; width: 230px; top: 100%; z-index: 40; margin-top: 4px;
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 12px;
   padding: 6px; box-shadow: 0 18px 40px rgba(0,0,0,.5);
 }
-/* Comprimido, el sidebar-switcher mide ~60px de ancho: sin esto el menu
-   hereda ese ancho (left/right relativos al padre) y "+ Nuevo cliente"
-   se parte en dos lineas. Se ancla desde la izquierda con un ancho fijo
-   propio, y "escapa" del riel angosto flotando sobre el contenido. */
-.sidebar.collapsed .switcher-menu { left: 8px; right: auto; width: 230px; }
 .switcher-item {
   display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 8px;
   cursor: pointer; font-size: 12px; color: var(--text);
@@ -306,31 +338,14 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 .switcher-new { display: flex; align-items: center; gap: 8px; padding: 9px; border-radius: 8px; font-size: 12px; color: var(--accent); cursor: pointer; margin-top: 4px; }
 .switcher-new:hover { background: var(--surface); }
 
-/* ── Sidebar: estado de sincronización ── */
-.sync-card { margin: 10px 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface2); font-size: 11px; color: var(--muted); }
-.sync-card .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 7px; animation: vv-pulse 2.4s ease-in-out infinite; }
-@keyframes vv-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .sync-card .dot { animation: none; } }
 
-/* ── Sidebar: colapsar ── */
-.collapse-btn {
-  display: flex; align-items: center; justify-content: center; padding: 9px; margin: 6px 8px 0;
-  border-radius: 9px; cursor: pointer; color: var(--muted);
-  background: none; border: none; width: 100%;
-}
-.collapse-btn:hover { background: var(--surface2); color: var(--text); }
-.brand-short { display: none; }
-.sidebar.collapsed .switcher-name,
-.sidebar.collapsed .nav-item span,
-.sidebar.collapsed .sync-card,
-.sidebar.collapsed .brand small,
-.sidebar.collapsed .brand-full,
-.sidebar.collapsed .switcher-caret { display: none; }
-.sidebar.collapsed .brand-short { display: inline; }
-.sidebar.collapsed .switcher-btn,
-.sidebar.collapsed .brand { justify-content: center; }
-.sidebar.collapsed .nav-item { justify-content: center; padding: 9px; }
-.sidebar.collapsed .nav-item.active::before { display: none; }
+.brand-short { display: inline; }
+.sidebar:hover .brand-short { display: none; }
+.brand-full { display: none; }
+.sidebar:hover .brand-full,
+.sidebar:hover .brand small { display: block; }
+.nav-item span { display: none; }
+.sidebar:hover .nav-item span { display: inline; }
 
 /* ── Header superior ── */
 .header-bar {
