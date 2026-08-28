@@ -209,6 +209,7 @@ export default function ClientesPage() {
 
 function DeleteClientModal({ client, onClose, onDone }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const hasLeadsConflict = err.includes("leads");
   async function confirmDelete() {
     setErr(""); setBusy(true);
     try { await api.deleteClient(client.id); onDone(); }
@@ -218,7 +219,11 @@ function DeleteClientModal({ client, onClose, onDone }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Eliminar cliente</h2>
-        {err && <div className="err">{err}</div>}
+        {err && (
+          hasLeadsConflict
+            ? <div className="notice" style={{ marginBottom: 14 }}><div>{err}</div></div>
+            : <div className="err">{err}</div>
+        )}
         <p style={{ color: "var(--muted)" }}>
           ¿Eliminar <strong style={{ color: "var(--text)" }}>{client.name}</strong>?
           Esto también elimina{client.ad_accounts.length ? ` sus ${client.ad_accounts.length} cuenta(s) de Meta` : ""} y no se puede deshacer.
