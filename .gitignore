@@ -29,5 +29,6 @@ graphify-out/
 
 # Artefactos de trabajo de agentes (ledger, reportes) — no son del proyecto
 .superpowers/
+.worktrees/
 # Vercel local
 .vercel/
