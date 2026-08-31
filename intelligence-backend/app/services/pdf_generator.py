@@ -294,7 +294,7 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
         comment_section = (
             '<div style="border-top:0.5px solid #e0e0e0;padding-top:7px;margin-top:7px;">'
             '<div style="font-size:9px;color:#aaa;margin-bottom:3px;">Observaciones</div>'
-            f'<div style="font-size:10px;color:#333;line-height:1.4;">{html.escape(comment)}</div></div>'
+            f'<div style="font-size:10px;color:#333;line-height:1.4;white-space:pre-wrap;">{html.escape(comment)}</div></div>'
         )
 
     return f"""
@@ -361,7 +361,7 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
         observaciones_block = f"""
             <div style="border-top:0.5px solid #e0e0e0;margin:16px 0;"></div>
             <div style="font-size:10px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">Observaciones del período</div>
-            <div style="font-size:11px;color:#333;line-height:1.5;">{html.escape(general_comment)}</div>"""
+            <div style="font-size:11px;color:#333;line-height:1.5;white-space:pre-wrap;">{html.escape(general_comment)}</div>"""
 
     table_rows = "".join(
         f"""

@@ -201,6 +201,22 @@ class ReportRequest(BaseModel):
     campaign_comments: dict[str, str] | None = None          # campaign_id (Meta) -> observación de esa campaña
     general_comment: str | None = None                       # observación general del período
 
+    @field_validator("general_comment")
+    @classmethod
+    def _comentario_general_no_muy_largo(cls, v: str | None) -> str | None:
+        if v is not None and len(v) > 2000:
+            raise ValueError("La observación general no puede superar los 2000 caracteres.")
+        return v
+
+    @field_validator("campaign_comments")
+    @classmethod
+    def _comentarios_por_campana_no_muy_largos(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is not None:
+            for comment in v.values():
+                if len(comment) > 2000:
+                    raise ValueError("Las observaciones por campaña no pueden superar los 2000 caracteres.")
+        return v
+
 
 class CheckAccessRequest(BaseModel):
     account_id: int  # id de la cuenta publicitaria en nuestra base

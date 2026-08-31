@@ -7,6 +7,8 @@ genera ese PDF puntual, no se persiste en la base de datos.
 """
 from __future__ import annotations
 
+import time
+
 from app.services import pdf_generator
 
 
@@ -323,3 +325,93 @@ def test_summary_reenvia_campaign_metrics_y_comentarios(client, login, tenant_a,
     assert campanas["1"]["selected_metrics"] == ["clicks"]
     assert campanas["1"]["comment"] == "Buen mes"
     assert "selected_metrics" not in campanas["2"]
+
+
+# ── Casos límite ─────────────────────────────────────────────────────
+def test_apply_customization_ignora_clave_que_no_matchea_ninguna_campana():
+    """Un id en campaign_metrics/campaign_comments que no corresponde a
+    ninguna campaña real (ej. una campaña pausada que Meta ya no devuelve,
+    o un id mal copiado) no debe reventar ni inventar una campaña fantasma."""
+    campaigns = [_fake_campaign("1")]
+    result = report_builder._apply_customization(
+        campaigns,
+        campaign_metrics={"999": ["clicks"]},
+        campaign_comments={"999": "comentario huérfano"},
+    )
+    assert len(result) == 1
+    assert result[0]["id"] == "1"
+    assert "selected_metrics" not in result[0]
+    assert "comment" not in result[0]
+
+
+def test_build_report_data_clave_sin_match_no_agrega_campana_fantasma(monkeypatch, tenant_a, factory):
+    account = factory.ad_account(tenant_a.client)
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    result = asyncio.run(report_builder.build_report_data(
+        account, ["token"], date(2026, 1, 1), date(2026, 1, 15),
+        campaign_metrics={"no-existe": ["clicks"]},
+        campaign_comments={"tampoco-existe": "x"},
+    ))
+    assert len(result["campaigns"]) == 1
+    assert result["campaigns"][0]["id"] == "1"
+    assert "selected_metrics" not in result["campaigns"][0]
+    assert "comment" not in result["campaigns"][0]
+
+
+def test_metrics_for_campaign_lista_vacia_explicita_no_cae_en_automatico():
+    """selected_metrics=[] (lista vacía explícita, no None) debe renderizar
+    cero tarjetas de métrica — no debe confundirse con 'no hay selección' y
+    caer de vuelta al set automático de metrics_by_objective."""
+    campaign = {"objective": "REACH",
+                "insights": {"impressions": 2000, "reach": 1500}}
+    result = pdf_generator.metrics_for_campaign(campaign, "$", selected_keys=[])
+    assert result == []
+
+
+# ── POST /reports/generate → GET /reports/jobs/{job_id}: reenvía la
+#    personalización hasta report_builder.build_pdf ──────────────────
+def test_generate_reenvia_campaign_metrics_y_comentarios_a_build_pdf(client, login, tenant_a, factory, monkeypatch):
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
+
+    captured = {}
+
+    async def fake_build_pdf(account, tokens, date_from, date_to, budget, currency, country_code=None,
+                             source_currency="USD", exchange_rate=None, attribution_window=None,
+                             campaign_metrics=None, campaign_comments=None, general_comment=None):
+        captured["campaign_metrics"] = campaign_metrics
+        captured["campaign_comments"] = campaign_comments
+        captured["general_comment"] = general_comment
+        return (b"%PDF-fake%", "reporte.pdf")
+
+    monkeypatch.setattr(report_builder, "build_pdf", fake_build_pdf)
+
+    r = client.post("/reports/generate", json={
+        "ad_account_id": account.id,
+        "date_from": "2026-01-01", "date_to": "2026-01-15",
+        "currency": "USD",
+        "campaign_metrics": {"1": ["clicks"]},
+        "campaign_comments": {"1": "Buen mes"},
+        "general_comment": "Resumen del período",
+    })
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+
+    status_body = None
+    for _ in range(50):
+        status_body = client.get(f"/reports/jobs/{job_id}").json()
+        if status_body["status"] != "processing":
+            break
+        time.sleep(0.05)
+
+    assert status_body["status"] == "done"
+    assert captured["campaign_metrics"] == {"1": ["clicks"]}
+    assert captured["campaign_comments"] == {"1": "Buen mes"}
+    assert captured["general_comment"] == "Resumen del período"

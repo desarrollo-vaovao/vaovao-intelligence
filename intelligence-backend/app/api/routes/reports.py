@@ -381,11 +381,17 @@ async def get_report_campaigns(
     db: Session = Depends(get_db),
 ):
     """
-    Preview liviano de las campañas del período: nombre, objetivo y el set de
+    Preview de las campañas del período: nombre, objetivo y el set de
     métricas que se mostraría automáticamente (`default_metrics`, claves de
     pdf_generator.METRIC_REGISTRY). Alimenta el panel "Personalizar métricas y
-    observaciones" del formulario de Reportes — sin anuncios ni imágenes, eso
-    solo lo necesita el PDF final.
+    observaciones" del formulario de Reportes.
+
+    La respuesta es liviana (sin anuncios ni imágenes), pero el costo real
+    contra Meta NO lo es: internamente llama a
+    meta_api.get_account_data_with_fallback, el mismo fetch completo
+    (dos jobs async de insights + el listado paginado completo de anuncios)
+    que usa la generación del reporte final. No es una operación barata para
+    llamar repetidamente.
     """
     account = _get_owned_account(account_id, current, db)
 

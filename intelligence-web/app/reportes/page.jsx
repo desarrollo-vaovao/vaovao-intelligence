@@ -168,15 +168,16 @@ export default function ReportesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id]);
 
-  // Si cambia el activo comercial o el período después de haber cargado el
-  // panel de personalización, la selección queda obsoleta (campañas de otro
-  // período) — se limpia y hay que volver a desplegarlo.
+  // Si cambia el activo comercial, el período o el filtro de país después de
+  // haber cargado el panel de personalización, la selección queda obsoleta
+  // (campañas de otro período/país) — se limpia y hay que volver a
+  // desplegarlo.
   useEffect(() => {
     setCampaignsPreview([]);
     setCampaignMetrics({});
     setCampaignComments({});
     setShowCustomize(false);
-  }, [accountId, dateFrom, dateTo]);
+  }, [accountId, dateFrom, dateTo, countryCode]);
 
   // Al cambiar el tipo de reporte, se llenan las fechas solas
   function cambiarTipo(tipo) {
@@ -451,6 +452,7 @@ export default function ReportesPage() {
                         placeholder="Observaciones de esta campaña (opcional)"
                         value={campaignComments[c.id] || ""}
                         onChange={(e) => setCampaignComment(c.id, e.target.value)}
+                        maxLength={2000}
                         style={{ width: "100%", minHeight: 50, resize: "vertical", fontSize: 12 }}
                       />
                     </div>
@@ -463,6 +465,7 @@ export default function ReportesPage() {
                         className="input"
                         value={generalComment}
                         onChange={(e) => setGeneralComment(e.target.value)}
+                        maxLength={2000}
                         style={{ width: "100%", minHeight: 70, resize: "vertical" }}
                         placeholder="Lo que vieron en el mes…"
                       />
