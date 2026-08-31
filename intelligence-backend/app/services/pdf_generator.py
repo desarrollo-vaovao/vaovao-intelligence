@@ -83,50 +83,141 @@ def _find_like(insights: dict):
     return None
 
 
-def metrics_by_objective(objective: str, insights: dict, currency_symbol: str = "$") -> list[dict]:
+def _cost_per(insights: dict, count_field: str, currency_symbol: str) -> str:
+    spend = insights.get("spend")
+    count = insights.get(count_field)
+    if spend and count:
+        try:
+            return fmt_currency(float(spend) / float(count), currency_symbol)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return "—"
+    return "—"
+
+
+def _cost_per_follower(insights: dict, currency_symbol: str) -> str:
+    spend = insights.get("spend")
+    likes = _find_like(insights)
+    if spend and likes:
+        try:
+            return fmt_currency(float(spend) / float(likes), currency_symbol)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return "—"
+    return "—"
+
+
+# Catálogo de TODAS las métricas que un reporte puede mostrar, sin importar
+# el objetivo de la campaña — la base del "mostrar/ocultar por campaña" que
+# elige quien arma el reporte (ver metrics_for_campaign). Cada entrada sabe
+# extraer y formatear su propio valor desde `insights`; una clave que no
+# aplica al objetivo real de la campaña simplemente no tiene el dato y se
+# muestra "—", igual que ya pasaba con campos ausentes antes de este catálogo.
+METRIC_REGISTRY: dict[str, dict] = {
+    "impressions": {
+        "label": "Impresiones",
+        "value": lambda ins, cur: fmt_number(ins.get("impressions")),
+    },
+    "reach": {
+        "label": "Alcance",
+        "value": lambda ins, cur: fmt_number(ins.get("reach")),
+    },
+    "frequency": {
+        "label": "Frecuencia",
+        "value": lambda ins, cur: (
+            f"{float(ins['frequency']):.2f}" if ins.get("frequency") else "—"
+        ),
+    },
+    "clicks": {
+        "label": "Clics",
+        "value": lambda ins, cur: fmt_number(ins.get("clicks")),
+    },
+    "ctr": {
+        "label": "CTR",
+        "value": lambda ins, cur: fmt_percent(ins.get("ctr")),
+    },
+    "cpc": {
+        "label": "CPC",
+        "value": lambda ins, cur: fmt_currency(ins.get("cpc"), cur),
+    },
+    "cpm": {
+        "label": "CPM",
+        "value": lambda ins, cur: fmt_currency(ins.get("cpm"), cur),
+    },
+    "conversations": {
+        "label": "Conversaciones",
+        "value": lambda ins, cur: fmt_number(ins.get("messaging_conversation_started_7d")),
+    },
+    "cost_per_conversation": {
+        "label": "Costo / conv.",
+        "value": lambda ins, cur: _cost_per(ins, "messaging_conversation_started_7d", cur),
+    },
+    "engagement": {
+        "label": "Interacciones",
+        "value": lambda ins, cur: fmt_number(ins.get("post_engagement")),
+    },
+    "cost_per_engagement": {
+        "label": "Costo / int.",
+        "value": lambda ins, cur: _cost_per(ins, "post_engagement", cur),
+    },
+    "followers": {
+        "label": "Seguidores",
+        "value": lambda ins, cur: fmt_number(_find_like(ins)),
+    },
+    "cost_per_follower": {
+        "label": "Costo / seg.",
+        "value": lambda ins, cur: _cost_per_follower(ins, cur),
+    },
+}
+
+# El set automático por objetivo, expresado como claves de METRIC_REGISTRY —
+# única fuente de verdad tanto para metrics_by_objective (comportamiento de
+# siempre) como para el `default_metrics` que ve el panel de personalización
+# del frontend (GET /reports/campaigns/{account_id}).
+OBJECTIVE_DEFAULT_METRIC_KEYS: dict[str, list[str]] = {
+    "MESSAGES": ["impressions", "conversations", "cost_per_conversation"],
+    "POST_ENGAGEMENT": ["impressions", "engagement", "cost_per_engagement"],
+    "PAGE_LIKES": ["impressions", "followers", "cost_per_follower"],
+    "REACH": ["impressions", "reach", "frequency", "cpm"],
+    "BRAND_AWARENESS": ["impressions", "reach", "frequency", "cpm"],
+    "DEFAULT": ["impressions", "clicks", "ctr", "cpc"],
+}
+
+
+def default_metric_keys(objective: str | None) -> list[str]:
+    """Claves de METRIC_REGISTRY que se mostrarían para este objetivo si
+    nadie personaliza nada — el mismo set que ya se calculaba antes de este
+    cambio, ahora expuesto como claves en vez de solo como render final."""
     obj = (objective or "").upper()
-    if obj == "MESSAGES":
-        conv = insights.get("messaging_conversation_started_7d")
-        spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(conv), currency_symbol) if spend and conv else "—"
-        return [
-            {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
-            {"label": "Conversaciones", "value": fmt_number(conv)},
-            {"label": "Costo / conv.", "value": cost},
-        ]
-    if obj == "POST_ENGAGEMENT":
-        eng = insights.get("post_engagement")
-        spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(eng), currency_symbol) if spend and eng else "—"
-        return [
-            {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
-            {"label": "Interacciones", "value": fmt_number(eng)},
-            {"label": "Costo / int.", "value": cost},
-        ]
-    if obj == "PAGE_LIKES":
-        likes = _find_like(insights)
-        spend = insights.get("spend")
-        cost = fmt_currency(float(spend) / float(likes), currency_symbol) if spend and likes else "—"
-        return [
-            {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
-            {"label": "Seguidores", "value": fmt_number(likes)},
-            {"label": "Costo / seg.", "value": cost},
-        ]
-    if obj in ("REACH", "BRAND_AWARENESS"):
-        freq = insights.get("frequency")
-        return [
-            {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
-            {"label": "Alcance", "value": fmt_number(insights.get("reach"))},
-            {"label": "Frecuencia", "value": f"{float(freq):.2f}" if freq else "—"},
-            {"label": "CPM", "value": fmt_currency(insights.get("cpm"), currency_symbol)},
-        ]
-    # Default: tráfico / clics
-    return [
-        {"label": "Impresiones", "value": fmt_number(insights.get("impressions"))},
-        {"label": "Clics", "value": fmt_number(insights.get("clicks"))},
-        {"label": "CTR", "value": fmt_percent(insights.get("ctr"))},
-        {"label": "CPC", "value": fmt_currency(insights.get("cpc"), currency_symbol)},
-    ]
+    return OBJECTIVE_DEFAULT_METRIC_KEYS.get(obj, OBJECTIVE_DEFAULT_METRIC_KEYS["DEFAULT"])
+
+
+def _resolve_metrics(keys: list[str], insights: dict, currency_symbol: str) -> list[dict]:
+    out = []
+    for key in keys:
+        entry = METRIC_REGISTRY.get(key)
+        if entry is None:
+            continue
+        out.append({"label": entry["label"], "value": entry["value"](insights, currency_symbol)})
+    return out
+
+
+def metrics_by_objective(objective: str, insights: dict, currency_symbol: str = "$") -> list[dict]:
+    return _resolve_metrics(default_metric_keys(objective), insights, currency_symbol)
+
+
+def metrics_for_campaign(campaign: dict, currency_symbol: str = "$",
+                         selected_keys: list[str] | None = None) -> list[dict]:
+    """
+    Métricas a mostrar en la tarjeta de esta campaña. Con `selected_keys`
+    (lista de claves de METRIC_REGISTRY elegidas a mano) se usa exactamente
+    esa selección, sin importar el objetivo — es el mecanismo de
+    "mostrar/ocultar por campaña" del panel de personalización. Sin
+    `selected_keys` (None) cae en el set automático de siempre
+    (`default_metric_keys`) — comportamiento idéntico al de antes de que
+    existiera esta función.
+    """
+    insights = campaign.get("insights") or {}
+    keys = selected_keys if selected_keys is not None else default_metric_keys(campaign.get("objective"))
+    return _resolve_metrics(keys, insights, currency_symbol)
 
 
 def ad_main_metric(objective: str, ins: dict) -> str:
