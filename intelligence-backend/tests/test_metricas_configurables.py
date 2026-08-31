@@ -294,3 +294,32 @@ def test_get_campaigns_respeta_filtro_de_pais(client, login, tenant_a, factory, 
     assert r.status_code == 200
     ids = [c["id"] for c in r.json()["campaigns"]]
     assert ids == ["1"]
+
+
+# ── POST /reports/summary reenvía la personalización ────────────────
+def test_summary_reenvia_campaign_metrics_y_comentarios(client, login, tenant_a, factory, monkeypatch):
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [_fake_campaign("1"), _fake_campaign("2")], "total_spend": 20.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    r = client.post("/reports/summary", json={
+        "ad_account_id": account.id,
+        "date_from": "2026-01-01", "date_to": "2026-01-15",
+        "currency": "USD",
+        "campaign_metrics": {"1": ["clicks"]},
+        "campaign_comments": {"1": "Buen mes"},
+        "general_comment": "Resumen del período",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["general_comment"] == "Resumen del período"
+    campanas = {c["id"]: c for c in body["campaigns"]}
+    assert campanas["1"]["selected_metrics"] == ["clicks"]
+    assert campanas["1"]["comment"] == "Buen mes"
+    assert "selected_metrics" not in campanas["2"]

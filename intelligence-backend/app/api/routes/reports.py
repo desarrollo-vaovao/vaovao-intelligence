@@ -77,12 +77,16 @@ async def _run_report_job(
     date_from, date_to, budget, currency: str, country_code: str | None = None,
     source_currency: str = "USD", exchange_rate: float | None = None,
     attribution_window: str | None = None,
+    campaign_metrics: dict[str, list[str]] | None = None,
+    campaign_comments: dict[str, str] | None = None,
+    general_comment: str | None = None,
 ) -> None:
     try:
         async with _generation_semaphore:
             pdf_bytes, filename = await report_builder.build_pdf(
                 account, tokens, date_from, date_to, budget, currency, country_code,
                 source_currency, exchange_rate, attribution_window,
+                campaign_metrics, campaign_comments, general_comment,
             )
         _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
     except ValueError as e:
@@ -219,6 +223,7 @@ async def generate_report(
     asyncio.create_task(_run_report_job(
         job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value,
         data.country_code, source_currency, exchange_rate, attribution_window,
+        data.campaign_metrics, data.campaign_comments, data.general_comment,
     ))
     return ReportJobCreated(job_id=job_id)
 
@@ -295,6 +300,7 @@ async def report_summary(
             account, tokens, data.date_from, data.date_to, data.budget,
             data.currency.value, data.country_code,
             source_currency, exchange_rate, attribution_window,
+            data.campaign_metrics, data.campaign_comments, data.general_comment,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
