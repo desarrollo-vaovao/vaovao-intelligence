@@ -230,3 +230,67 @@ def test_build_report_data_con_personalizacion_adjunta_por_campana(monkeypatch, 
     assert "selected_metrics" not in campanas["2"]
     assert "comment" not in campanas["2"]
     assert result["general_comment"] == "Resumen del período"
+
+
+# ── GET /reports/campaigns/{account_id} ─────────────────────────────
+import app.api.routes.reports as reports_routes
+
+
+def test_get_campaigns_devuelve_nombre_objetivo_y_default_metrics(client, login, tenant_a, factory, monkeypatch):
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [_fake_campaign("111", "MESSAGES")], "total_spend": 10.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    r = client.get(f"/reports/campaigns/{account.id}?date_from=2026-01-01&date_to=2026-01-15")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["campaigns"] == [{
+        "id": "111", "name": "Campaña 111", "objective": "MESSAGES",
+        "default_metrics": ["impressions", "conversations", "cost_per_conversation"],
+    }]
+
+
+def test_get_campaigns_404_si_no_es_de_la_organizacion(client, login, tenant_a, tenant_b, factory):
+    login(tenant_a.owner)
+    account_ajena = factory.ad_account(tenant_b.client)
+    r = client.get(f"/reports/campaigns/{account_ajena.id}?date_from=2026-01-01&date_to=2026-01-15")
+    assert r.status_code == 404
+
+
+def test_get_campaigns_503_sin_tokens(client, login, tenant_a, factory, monkeypatch):
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    monkeypatch.setattr(
+        reports_routes, "resolve_tokens",
+        lambda current, db: ([], "No has conectado tu Facebook y no hay tokens centrales."),
+    )
+    r = client.get(f"/reports/campaigns/{account.id}?date_from=2026-01-01&date_to=2026-01-15")
+    assert r.status_code == 503
+
+
+def test_get_campaigns_respeta_filtro_de_pais(client, login, tenant_a, factory, monkeypatch):
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
+
+    con_pais = _fake_campaign("1", "REACH")
+    con_pais["ads"] = [{"id": "ad1", "name": "Anuncio", "insights": {}, "countries": ["GT"]}]
+    sin_pais_pedido = _fake_campaign("2", "REACH")
+    sin_pais_pedido["ads"] = [{"id": "ad2", "name": "Anuncio", "insights": {}, "countries": ["US"]}]
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [con_pais, sin_pais_pedido], "total_spend": 20.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    r = client.get(f"/reports/campaigns/{account.id}?date_from=2026-01-01&date_to=2026-01-15&country_code=GT")
+    assert r.status_code == 200
+    ids = [c["id"] for c in r.json()["campaigns"]]
+    assert ids == ["1"]

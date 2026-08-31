@@ -21,6 +21,7 @@ Endpoints:
 import asyncio
 import time
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
@@ -39,7 +40,7 @@ from app.schemas import (
     ReportJobStatus,
     ATTRIBUTION_WINDOWS,
 )
-from app.services import meta_api, report_builder
+from app.services import meta_api, pdf_generator, report_builder
 from app.services.meta_tokens import resolve_tokens
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -362,3 +363,58 @@ async def get_available_countries(
             countries.update(ad.get("countries", []))
 
     return {"countries": sorted(list(countries))}
+
+
+@router.get("/campaigns/{account_id}")
+async def get_report_campaigns(
+    account_id: int,
+    date_from: date,
+    date_to: date,
+    country_code: str | None = None,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Preview liviano de las campañas del período: nombre, objetivo y el set de
+    métricas que se mostraría automáticamente (`default_metrics`, claves de
+    pdf_generator.METRIC_REGISTRY). Alimenta el panel "Personalizar métricas y
+    observaciones" del formulario de Reportes — sin anuncios ni imágenes, eso
+    solo lo necesita el PDF final.
+    """
+    account = _get_owned_account(account_id, current, db)
+
+    if date_from > date_to:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "La fecha de inicio no puede ser posterior a la de fin.",
+        )
+
+    tokens, error = resolve_tokens(current, db)
+    if not tokens:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
+
+    org = db.get(Organization, current.org_id)
+    attribution_windows = ATTRIBUTION_WINDOWS.get(org.attribution_window if org else None)
+
+    try:
+        data = await meta_api.get_account_data_with_fallback(
+            tokens, account.meta_ad_account_id,
+            date_from.isoformat(), date_to.isoformat(),
+            attribution_windows,
+        )
+    except meta_api.MetaApiError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")
+
+    campaigns, _ = report_builder._filter_campaigns_by_country(data["campaigns"], country_code)
+
+    return {
+        "campaigns": [
+            {
+                "id": str(c["id"]),
+                "name": c.get("name") or "",
+                "objective": c.get("objective") or "DEFAULT",
+                "default_metrics": pdf_generator.default_metric_keys(c.get("objective")),
+            }
+            for c in campaigns
+        ]
+    }
