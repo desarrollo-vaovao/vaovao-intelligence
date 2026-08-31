@@ -197,6 +197,9 @@ class ReportRequest(BaseModel):
     budget: float | None = None
     currency: ReportCurrency = ReportCurrency.USD
     country_code: str | None = None  # ej. "GT" para Guatemala, "US" para USA; None = todos
+    campaign_metrics: dict[str, list[str]] | None = None    # campaign_id (Meta) -> claves de pdf_generator.METRIC_REGISTRY
+    campaign_comments: dict[str, str] | None = None          # campaign_id (Meta) -> observación de esa campaña
+    general_comment: str | None = None                       # observación general del período
 
 
 class CheckAccessRequest(BaseModel):

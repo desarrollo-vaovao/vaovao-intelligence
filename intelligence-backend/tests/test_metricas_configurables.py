@@ -170,3 +170,63 @@ def test_render_report_page_escapa_html_del_general_comment():
     html_out = pdf_generator.render_report_page(report_data, "$")
     assert "<b>negrita</b>" not in html_out
     assert "&lt;b&gt;negrita&lt;/b&gt; &amp; cosas" in html_out
+
+
+# ── report_builder: pasa la personalización hasta report_data ──────
+import asyncio
+from datetime import date
+
+from app.services import meta_api, report_builder
+
+
+def _fake_campaign(cid: str, objective: str = "REACH") -> dict:
+    return {
+        "id": cid, "name": f"Campaña {cid}", "objective": objective,
+        "status": "ACTIVE", "spend": 10.0,
+        "insights": {"impressions": 100, "reach": 90, "clicks": 5, "ctr": 5.0},
+        "ads": [],
+    }
+
+
+def test_build_report_data_sin_personalizacion_no_agrega_claves(monkeypatch, tenant_a, factory):
+    """Regresión: sin campaign_metrics/campaign_comments/general_comment, el
+    resultado es el mismo de antes de este cambio."""
+    account = factory.ad_account(tenant_a.client)
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    result = asyncio.run(report_builder.build_report_data(
+        account, ["token"], date(2026, 1, 1), date(2026, 1, 15),
+    ))
+    assert "selected_metrics" not in result["campaigns"][0]
+    assert "comment" not in result["campaigns"][0]
+    assert result.get("general_comment") is None
+
+
+def test_build_report_data_con_personalizacion_adjunta_por_campana(monkeypatch, tenant_a, factory):
+    account = factory.ad_account(tenant_a.client)
+
+    async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
+                                                   attribution_windows=None):
+        return {"campaigns": [_fake_campaign("1"), _fake_campaign("2")], "total_spend": 20.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    result = asyncio.run(report_builder.build_report_data(
+        account, ["token"], date(2026, 1, 1), date(2026, 1, 15),
+        campaign_metrics={"1": ["clicks", "ctr"]},
+        campaign_comments={"1": "Buen mes"},
+        general_comment="Resumen del período",
+    ))
+
+    campanas = {c["id"]: c for c in result["campaigns"]}
+    assert campanas["1"]["selected_metrics"] == ["clicks", "ctr"]
+    assert campanas["1"]["comment"] == "Buen mes"
+    # La campaña "2" no tiene entrada en ninguno de los dos dicts: intacta.
+    assert "selected_metrics" not in campanas["2"]
+    assert "comment" not in campanas["2"]
+    assert result["general_comment"] == "Resumen del período"

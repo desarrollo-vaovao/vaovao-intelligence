@@ -126,12 +126,35 @@ def _filter_campaigns_by_country(campaigns: list[dict], country_code: str | None
     return filtered, filtered_spend
 
 
+def _apply_customization(campaigns: list[dict], campaign_metrics: dict[str, list[str]] | None,
+                         campaign_comments: dict[str, str] | None) -> list[dict]:
+    """Adjunta selected_metrics/comment a cada campaña, buscando por su id de
+    Meta (clave de ambos dicts, como string — ver GET /reports/campaigns).
+    Campañas sin entrada en ninguno de los dos quedan intactas: su render
+    sigue usando el set automático de metrics_by_objective."""
+    campaign_metrics = campaign_metrics or {}
+    campaign_comments = campaign_comments or {}
+    out = []
+    for c in campaigns:
+        cid = str(c.get("id"))
+        entry = dict(c)
+        if cid in campaign_metrics:
+            entry["selected_metrics"] = campaign_metrics[cid]
+        if cid in campaign_comments:
+            entry["comment"] = campaign_comments[cid]
+        out.append(entry)
+    return out
+
+
 async def build_report_data(account: AdAccount, tokens: list[str], date_from: date, date_to: date,
                             budget: float | None = None, currency: str = "USD",
                             country_code: str | None = None,
                             source_currency: str = "USD",
                             exchange_rate: float | None = None,
-                            attribution_window: str | None = None) -> dict:
+                            attribution_window: str | None = None,
+                            campaign_metrics: dict[str, list[str]] | None = None,
+                            campaign_comments: dict[str, str] | None = None,
+                            general_comment: str | None = None) -> dict:
     """
     Construye el diccionario que pdf_generator sabe dibujar, para UN activo
     comercial.
@@ -168,6 +191,9 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
     if factor is not None and factor != 1.0:
         campaigns, total_spend = _convert_money(campaigns, total_spend, factor)
 
+    if campaign_metrics or campaign_comments:
+        campaigns = _apply_customization(campaigns, campaign_metrics, campaign_comments)
+
     return {
         "client_name": account.label,
         "period": format_period(date_from, date_to),
@@ -176,6 +202,7 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
         "budget": budget,
         "currency_symbol": CURRENCY_SYMBOLS.get(currency, "$"),
         "country_code": country_code,
+        "general_comment": general_comment,
     }
 
 
@@ -184,7 +211,10 @@ async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date
                     country_code: str | None = None,
                     source_currency: str = "USD",
                     exchange_rate: float | None = None,
-                    attribution_window: str | None = None) -> tuple[bytes, str]:
+                    attribution_window: str | None = None,
+                    campaign_metrics: dict[str, list[str]] | None = None,
+                    campaign_comments: dict[str, str] | None = None,
+                    general_comment: str | None = None) -> tuple[bytes, str]:
     """
     Genera el PDF completo. Devuelve (bytes_del_pdf, nombre_de_archivo).
 
@@ -201,6 +231,7 @@ async def build_pdf(account: AdAccount, tokens: list[str], date_from: date, date
         report_data = await build_report_data(
             account, tokens, date_from, date_to, budget, currency, country_code,
             source_currency, exchange_rate, attribution_window,
+            campaign_metrics, campaign_comments, general_comment,
         )
         info["campañas"] = len(report_data["campaigns"])
         pdf_bytes = await pdf_generator.generate_pdf(report_data)
