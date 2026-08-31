@@ -297,15 +297,11 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
             f'<div style="font-size:10px;color:#333;line-height:1.4;">{html.escape(comment)}</div></div>'
         )
 
-    # Cuando se seleccionan métricas personalizadas, no mostramos el label del objetivo
-    # en el badge para evitar duplicar información
-    badge_label = "" if selected_metrics else objective_label(campaign.get("objective"))
-
     return f"""
     <div style="border:0.5px solid #e0e0e0;border-radius:10px;overflow:hidden;break-inside:avoid;">
       <div style="background:#111;color:#fff;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;">
         <span style="font-size:11px;font-weight:500;">{campaign.get("name","")}</span>
-        <span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:9px;font-weight:500;{objective_badge(campaign.get("objective"))}">{badge_label}</span>
+        <span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:9px;font-weight:500;{objective_badge(campaign.get("objective"))}">{objective_label(campaign.get("objective"))}</span>
       </div>
       <div style="padding:10px 12px;display:flex;gap:12px;">
         <div style="width:72px;height:72px;background:#f5f5f5;border-radius:8px;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">{img}</div>

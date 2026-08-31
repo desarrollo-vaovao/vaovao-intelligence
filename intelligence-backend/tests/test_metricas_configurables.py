@@ -138,8 +138,12 @@ def test_render_campaign_card_usa_selected_metrics():
                 "insights": {"impressions": 100, "clicks": 5, "ctr": 5.0}, "ads": [],
                 "selected_metrics": ["clicks", "ctr"]}
     html_out = pdf_generator.render_campaign_card(campaign, "$")
+    # Las métricas seleccionadas deben aparecer en la tarjeta
     assert "Clics" in html_out
-    assert "Alcance" not in html_out  # métrica automática de REACH, no elegida
+    assert "CTR" in html_out
+    # Las métricas automáticas de REACH que NO fueron elegidas no deben aparecer
+    # (Frecuencia es un metric card label, nunca aparece en el badge)
+    assert "Frecuencia" not in html_out
 
 
 # ── Render: observación general del período ────────────────────────
