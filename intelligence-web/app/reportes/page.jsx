@@ -8,6 +8,34 @@ import { useClient } from "@/lib/clients";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
 
+// Mismas claves que pdf_generator.METRIC_REGISTRY (backend) — si se agrega
+// una métrica nueva ahí, se agrega aquí también.
+const METRIC_CATALOG = [
+  { key: "impressions", label: "Impresiones" },
+  { key: "reach", label: "Alcance" },
+  { key: "frequency", label: "Frecuencia" },
+  { key: "clicks", label: "Clics" },
+  { key: "ctr", label: "CTR" },
+  { key: "cpc", label: "CPC" },
+  { key: "cpm", label: "CPM" },
+  { key: "conversations", label: "Conversaciones" },
+  { key: "cost_per_conversation", label: "Costo / conv." },
+  { key: "engagement", label: "Interacciones" },
+  { key: "cost_per_engagement", label: "Costo / int." },
+  { key: "followers", label: "Seguidores" },
+  { key: "cost_per_follower", label: "Costo / seg." },
+];
+
+const OBJECTIVE_LABELS = {
+  LINK_CLICKS: "Tráfico", TRAFFIC: "Tráfico", MESSAGES: "Mensajes",
+  POST_ENGAGEMENT: "Interacción", PAGE_LIKES: "Seguidores", REACH: "Alcance",
+  BRAND_AWARENESS: "Reconocimiento", VIDEO_VIEWS: "Vistas de video",
+  LEAD_GENERATION: "Leads", CONVERSIONS: "Conversiones",
+};
+function objectiveLabel(obj) {
+  return OBJECTIVE_LABELS[obj] || obj || "—";
+}
+
 export default function ReportesPage() {
   const { client } = useClient() || {};
   const { user } = useAuth() || {};
@@ -35,6 +63,13 @@ export default function ReportesPage() {
   const [countries, setCountries] = useState([]);
   const [loadingCountries, setLoadingCountries] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const [showCustomize, setShowCustomize] = useState(false);
+  const [campaignsPreview, setCampaignsPreview] = useState([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  const [campaignMetrics, setCampaignMetrics] = useState({});
+  const [campaignComments, setCampaignComments] = useState({});
+  const [generalComment, setGeneralComment] = useState("");
 
   useEffect(() => {
     api.reportStatus().then(setStatus).catch((e) => setErr(e.message));
@@ -77,6 +112,47 @@ export default function ReportesPage() {
     }
   }
 
+  async function loadCampaignsPreview() {
+    if (!accountId || !dateFrom || !dateTo) return;
+    setLoadingCampaigns(true);
+    try {
+      const response = await api.reportCampaigns(accountId, dateFrom, dateTo, countryCode || null);
+      setCampaignsPreview(response.campaigns || []);
+      const initialMetrics = {};
+      for (const c of response.campaigns || []) {
+        initialMetrics[c.id] = c.default_metrics;
+      }
+      setCampaignMetrics(initialMetrics);
+    } catch (e) {
+      setErr(e.message);
+      setCampaignsPreview([]);
+    } finally {
+      setLoadingCampaigns(false);
+    }
+  }
+
+  function toggleCustomize() {
+    const next = !showCustomize;
+    setShowCustomize(next);
+    if (next && campaignsPreview.length === 0) {
+      loadCampaignsPreview();
+    }
+  }
+
+  function toggleMetric(campaignId, key) {
+    setCampaignMetrics((prev) => {
+      const current = prev[campaignId] || [];
+      const next = current.includes(key)
+        ? current.filter((k) => k !== key)
+        : [...current, key];
+      return { ...prev, [campaignId]: next };
+    });
+  }
+
+  function setCampaignComment(campaignId, text) {
+    setCampaignComments((prev) => ({ ...prev, [campaignId]: text }));
+  }
+
   // Al cambiar el CLIENTE activo (sidebar): sus cuentas son las únicas
   // válidas para reportar, así que cualquier selección de un cliente
   // anterior queda descartada. Si el cliente activo tiene una sola cuenta
@@ -91,6 +167,16 @@ export default function ReportesPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id]);
+
+  // Si cambia el activo comercial o el período después de haber cargado el
+  // panel de personalización, la selección queda obsoleta (campañas de otro
+  // período) — se limpia y hay que volver a desplegarlo.
+  useEffect(() => {
+    setCampaignsPreview([]);
+    setCampaignMetrics({});
+    setCampaignComments({});
+    setShowCustomize(false);
+  }, [accountId, dateFrom, dateTo]);
 
   // Al cambiar el tipo de reporte, se llenan las fechas solas
   function cambiarTipo(tipo) {
@@ -122,6 +208,7 @@ export default function ReportesPage() {
   async function generate() {
     setErr(""); setInfo(""); setBusy(true);
     try {
+      const personalizado = showCustomize && campaignsPreview.length > 0;
       const filename = await api.generateReport({
         ad_account_id: Number(accountId),
         report_type: reportType,
@@ -130,6 +217,13 @@ export default function ReportesPage() {
         budget: budget ? Number(budget) : null,
         currency,
         country_code: countryCode || null,
+        ...(personalizado ? {
+          campaign_metrics: campaignMetrics,
+          campaign_comments: Object.fromEntries(
+            Object.entries(campaignComments).filter(([, v]) => v && v.trim())
+          ),
+          general_comment: generalComment.trim() || null,
+        } : {}),
       });
       setInfo(`Reporte descargado: ${filename}`);
     } catch (e) {
@@ -304,6 +398,80 @@ export default function ReportesPage() {
                 style={{ paddingLeft: 22 }} />
             </div>
           </div>
+
+          {accountId && dateFrom && dateTo && (
+            <div className="field">
+              <button
+                type="button"
+                onClick={toggleCustomize}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, background: "none",
+                  border: "none", padding: 0, cursor: "pointer", color: "var(--muted)",
+                  fontSize: 12, fontFamily: "inherit",
+                }}
+              >
+                <span>{showCustomize ? "▾" : "▸"}</span>
+                Personalizar métricas y observaciones (opcional)
+              </button>
+
+              {showCustomize && (
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 14 }}>
+                  {loadingCampaigns && (
+                    <div style={{ fontSize: 12, color: "var(--muted)" }}>Cargando campañas…</div>
+                  )}
+
+                  {!loadingCampaigns && campaignsPreview.length === 0 && (
+                    <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                      No se encontraron campañas con datos en este período.
+                    </div>
+                  )}
+
+                  {campaignsPreview.map((c) => (
+                    <div key={c.id} className="card" style={{ padding: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
+                        {c.name}{" "}
+                        <span style={{ color: "var(--muted)", fontWeight: 400 }}>
+                          · {objectiveLabel(c.objective)}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                        {METRIC_CATALOG.map((m) => (
+                          <label key={m.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                            <input
+                              type="checkbox"
+                              checked={(campaignMetrics[c.id] || []).includes(m.key)}
+                              onChange={() => toggleMetric(c.id, m.key)}
+                            />
+                            {m.label}
+                          </label>
+                        ))}
+                      </div>
+                      <textarea
+                        className="input"
+                        placeholder="Observaciones de esta campaña (opcional)"
+                        value={campaignComments[c.id] || ""}
+                        onChange={(e) => setCampaignComment(c.id, e.target.value)}
+                        style={{ width: "100%", minHeight: 50, resize: "vertical", fontSize: 12 }}
+                      />
+                    </div>
+                  ))}
+
+                  {campaignsPreview.length > 0 && (
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>Observaciones generales del período</label>
+                      <textarea
+                        className="input"
+                        value={generalComment}
+                        onChange={(e) => setGeneralComment(e.target.value)}
+                        style={{ width: "100%", minHeight: 70, resize: "vertical" }}
+                        placeholder="Lo que vieron en el mes…"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <button
             className="btn btn-primary"

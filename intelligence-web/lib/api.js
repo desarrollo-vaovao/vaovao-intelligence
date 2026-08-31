@@ -65,6 +65,11 @@ export const api = {
   updateOrgSettings: (body) => request("/organization/settings", { method: "PATCH", body }),
 
   reportStatus: () => request("/reports/status"),
+  reportCampaigns: (accountId, dateFrom, dateTo, countryCode) => {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    if (countryCode) params.set("country_code", countryCode);
+    return request(`/reports/campaigns/${accountId}?${params.toString()}`);
+  },
   // La generación corre en segundo plano en el backend: esto arranca el job,
   // hace polling del estado y descarga el PDF cuando queda listo.
   // onProgress(status) es opcional, se llama en cada vuelta del polling.
