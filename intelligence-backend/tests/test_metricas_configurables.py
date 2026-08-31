@@ -105,3 +105,64 @@ def test_metrics_for_campaign_sin_insights_no_revienta():
     campaign = {"objective": "MESSAGES"}  # sin la clave "insights"
     result = pdf_generator.metrics_for_campaign(campaign, "$", selected_keys=["impressions"])
     assert result == [{"label": "Impresiones", "value": "—"}]
+
+
+# ── Render: comentario por campaña ─────────────────────────────────
+def test_render_campaign_card_sin_comentario_no_agrega_seccion():
+    campaign = {"name": "Campaña X", "objective": "REACH",
+                "insights": {"impressions": 100, "reach": 90}, "ads": []}
+    html_out = pdf_generator.render_campaign_card(campaign, "$")
+    assert "Observaciones" not in html_out
+
+
+def test_render_campaign_card_con_comentario_lo_muestra():
+    campaign = {"name": "Campaña X", "objective": "REACH",
+                "insights": {"impressions": 100, "reach": 90}, "ads": [],
+                "comment": "Buen desempeño esta quincena"}
+    html_out = pdf_generator.render_campaign_card(campaign, "$")
+    assert "Observaciones" in html_out
+    assert "Buen desempeño esta quincena" in html_out
+
+
+def test_render_campaign_card_escapa_html_del_comentario():
+    campaign = {"name": "Campaña X", "objective": "REACH",
+                "insights": {"impressions": 100}, "ads": [],
+                "comment": "<script>alert(1)</script>"}
+    html_out = pdf_generator.render_campaign_card(campaign, "$")
+    assert "<script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_render_campaign_card_usa_selected_metrics():
+    campaign = {"name": "Campaña X", "objective": "REACH",
+                "insights": {"impressions": 100, "clicks": 5, "ctr": 5.0}, "ads": [],
+                "selected_metrics": ["clicks", "ctr"]}
+    html_out = pdf_generator.render_campaign_card(campaign, "$")
+    assert "Clics" in html_out
+    assert "Alcance" not in html_out  # métrica automática de REACH, no elegida
+
+
+# ── Render: observación general del período ────────────────────────
+def test_render_report_page_sin_general_comment_no_agrega_seccion():
+    report_data = {"client_name": "Cliente", "period": "1-15 ene 2026",
+                    "campaigns": [], "total_spend": 0}
+    html_out = pdf_generator.render_report_page(report_data, "$")
+    assert "Observaciones del período" not in html_out
+
+
+def test_render_report_page_con_general_comment_lo_muestra():
+    report_data = {"client_name": "Cliente", "period": "1-15 ene 2026",
+                    "campaigns": [], "total_spend": 0,
+                    "general_comment": "El período tuvo buen desempeño en general."}
+    html_out = pdf_generator.render_report_page(report_data, "$")
+    assert "Observaciones del período" in html_out
+    assert "El período tuvo buen desempeño en general." in html_out
+
+
+def test_render_report_page_escapa_html_del_general_comment():
+    report_data = {"client_name": "Cliente", "period": "1-15 ene 2026",
+                    "campaigns": [], "total_spend": 0,
+                    "general_comment": "<b>negrita</b> & cosas"}
+    html_out = pdf_generator.render_report_page(report_data, "$")
+    assert "<b>negrita</b>" not in html_out
+    assert "&lt;b&gt;negrita&lt;/b&gt; &amp; cosas" in html_out

@@ -12,6 +12,7 @@ Consume la estructura que produce meta_api.get_account_data():
     ad       = {name, image_url, insights{}}
 """
 import asyncio
+import html
 from datetime import datetime
 
 from app.services import assets, browser_pool, perf
@@ -240,7 +241,8 @@ def ad_cost_metric(objective: str, ins: dict, currency_symbol: str = "$") -> str
 
 # ── Render de una tarjeta de campaña ──────────────────────────
 def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
-    metrics = metrics_by_objective(campaign.get("objective"), campaign.get("insights", {}), currency_symbol)
+    selected_metrics = campaign.get("selected_metrics")
+    metrics = metrics_for_campaign(campaign, currency_symbol, selected_metrics)
     ads = campaign.get("ads") or []
     best_ad = ads[0] if ads else None
     other_ads = ads[1:4]
@@ -286,17 +288,31 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
             f'{best_html}{others_html}</div>'
         )
 
+    comment = (campaign.get("comment") or "").strip()
+    comment_section = ""
+    if comment:
+        comment_section = (
+            '<div style="border-top:0.5px solid #e0e0e0;padding-top:7px;margin-top:7px;">'
+            '<div style="font-size:9px;color:#aaa;margin-bottom:3px;">Observaciones</div>'
+            f'<div style="font-size:10px;color:#333;line-height:1.4;">{html.escape(comment)}</div></div>'
+        )
+
+    # Cuando se seleccionan métricas personalizadas, no mostramos el label del objetivo
+    # en el badge para evitar duplicar información
+    badge_label = "" if selected_metrics else objective_label(campaign.get("objective"))
+
     return f"""
     <div style="border:0.5px solid #e0e0e0;border-radius:10px;overflow:hidden;break-inside:avoid;">
       <div style="background:#111;color:#fff;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;">
         <span style="font-size:11px;font-weight:500;">{campaign.get("name","")}</span>
-        <span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:9px;font-weight:500;{objective_badge(campaign.get("objective"))}">{objective_label(campaign.get("objective"))}</span>
+        <span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:9px;font-weight:500;{objective_badge(campaign.get("objective"))}">{badge_label}</span>
       </div>
       <div style="padding:10px 12px;display:flex;gap:12px;">
         <div style="width:72px;height:72px;background:#f5f5f5;border-radius:8px;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;">{img}</div>
         <div style="flex:1;">
           <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap;">{metrics_html}</div>
           {ads_section}
+          {comment_section}
         </div>
       </div>
     </div>
@@ -311,6 +327,7 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
     total_spend = report_data.get("total_spend", 0)
     budget = report_data.get("budget")
     country_code = report_data.get("country_code")
+    general_comment = (report_data.get("general_comment") or "").strip()
 
     pct = min(round((total_spend / budget) * 100), 100) if budget else None
 
@@ -342,6 +359,13 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
               </div>
               <div style="font-size:12px;font-weight:600;color:#FD1D1D;margin-top:5px;">{pct}% ejecutado</div>
             </div>"""
+
+    observaciones_block = ""
+    if general_comment:
+        observaciones_block = f"""
+            <div style="border-top:0.5px solid #e0e0e0;margin:16px 0;"></div>
+            <div style="font-size:10px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">Observaciones del período</div>
+            <div style="font-size:11px;color:#333;line-height:1.5;">{html.escape(general_comment)}</div>"""
 
     table_rows = "".join(
         f"""
@@ -384,6 +408,8 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
           </div>
           {pct_block}
         </div>
+
+        {observaciones_block}
 
         <div style="border-top:0.5px solid #e0e0e0;margin:16px 0;"></div>
 
