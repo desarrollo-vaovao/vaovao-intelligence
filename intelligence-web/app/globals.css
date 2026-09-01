@@ -396,19 +396,6 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .bell-btn { width: 32px; height: 32px; border: 1px solid var(--border2); border-radius: 9px; background: var(--surface); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
 .bell-btn:hover { border-color: var(--border3); }
-
-/* ── Selector de tema (claro / oscuro / sistema) ── */
-.theme-switch {
-  display: flex; align-items: center; gap: 2px; padding: 2px;
-  background: var(--surface); border: 1px solid var(--border2); border-radius: 9px;
-}
-.theme-switch-btn {
-  width: 26px; height: 26px; padding: 0; border: none; border-radius: 7px;
-  background: transparent; color: var(--muted); cursor: pointer;
-  display: flex; align-items: center; justify-content: center; transition: all .15s;
-}
-.theme-switch-btn:hover { color: var(--text); }
-.theme-switch-btn.active { background: var(--surface2); color: var(--accent); }
 /* ── Leads: métricas ── */
 .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .metric-card {

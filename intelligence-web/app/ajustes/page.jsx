@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth";
 import { useClient } from "@/lib/clients";
 import { api } from "@/lib/api";
 import ConexionMetaPanel from "@/lib/ConexionMetaPanel";
+import { useTheme, THEME_OPTIONS } from "@/lib/theme";
 
 const TABS = [
   ["cuenta", "Cuenta"],
@@ -116,6 +117,35 @@ function PasswordForm({ onClose }) {
   );
 }
 
+function AparienciaField() {
+  const { preference, setTheme } = useTheme() || {};
+
+  return (
+    <div className="field" style={{ marginBottom: 0 }}>
+      <label>Apariencia</label>
+      <div className="row" style={{ gap: 8 }}>
+        {THEME_OPTIONS.map((opt) => {
+          const activo = preference === opt.value;
+          return (
+            <button
+              key={opt.value} type="button" onClick={() => setTheme?.(opt.value)}
+              className="btn" style={{
+                flex: 1, justifyContent: "center",
+                background: activo ? "var(--surface2)" : "transparent",
+                border: `1px solid ${activo ? "var(--orange)" : "var(--border2)"}`,
+                color: activo ? "var(--orange)" : "var(--muted)",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">{opt.icon}</svg>
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PerfilCard() {
   const { user, refreshUser } = useAuth();
   const [fullName, setFullName] = useState("");
@@ -194,6 +224,10 @@ function PerfilCard() {
       <button className="btn btn-primary" onClick={save} disabled={busy || !dirty || !fullName.trim()}>
         {busy ? "Guardando…" : "Guardar cambios"}
       </button>
+
+      <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
+        <AparienciaField />
+      </div>
 
       <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
         {!showPassword ? (
