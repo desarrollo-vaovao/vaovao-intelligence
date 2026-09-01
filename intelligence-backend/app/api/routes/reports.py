@@ -301,6 +301,7 @@ async def report_summary(
             data.currency.value, data.country_code,
             source_currency, exchange_rate, attribution_window,
             data.campaign_metrics, data.campaign_comments, data.general_comment,
+            include_inactive=True,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

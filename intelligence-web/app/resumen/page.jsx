@@ -7,6 +7,7 @@ import { useClient } from "@/lib/clients";
 import { api } from "@/lib/api";
 import DateRangePicker, { periodoQuincenal } from "@/lib/DateRangePicker";
 import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
+import { objectiveLabel, statusLabel } from "@/lib/objectives";
 
 const BUDGET_KEY = "vv_resumen_budget";
 const CURRENCY_KEY = "vv_resumen_currency";
@@ -68,10 +69,20 @@ export default function ResumenPage() {
   // esta pantalla no tiene selector de activo (a diferencia de Reportes).
   const accountId = client?.ad_accounts?.[0]?.id ?? null;
 
+  // Solo se limpia `summary` a null cuando cambia el ACTIVO comercial (para
+  // no mostrar por un instante el resumen del cliente anterior mientras
+  // carga el nuevo). Un cambio de fecha/moneda/presupuesto sobre el MISMO
+  // activo deja el resumen anterior en pantalla mientras llega el nuevo —
+  // antes se borraba todo de inmediato y la pantalla completa se
+  // reemplazaba por "Cargando…" en cada ajuste, como si la página entera
+  // se hubiera recargado.
+  const prevAccountId = useRef(null);
   useEffect(() => {
     if (!client || !dateFrom || !dateTo || !accountId) { setSummary(null); return; }
     let cancelled = false;
-    setBusy(true); setErr(""); setSummary(null);
+    if (prevAccountId.current !== accountId) setSummary(null);
+    prevAccountId.current = accountId;
+    setBusy(true); setErr("");
     api.reportSummary({
       ad_account_id: accountId,
       date_from: dateFrom,
@@ -111,7 +122,12 @@ export default function ResumenPage() {
     : 0;
   const budgetNum = budget ? Number(budget) : null;
   const pctUsed = budgetNum ? Math.min(100, Math.round((totalSpend / budgetNum) * 100)) : null;
-  const topCampaigns = flattenCampaigns(summary).slice(0, 5);
+  // Todas las campañas activas/pausadas del período, no solo un "top 5":
+  // /reports/summary las trae con include_inactive=True (ver backend), así
+  // que una campaña sigue apareciendo aquí aunque no haya gastado nada
+  // en el rango de fechas elegido — la idea es tener un panel estable en
+  // vez de que las campañas aparezcan y desaparezcan según la fecha.
+  const campaigns = flattenCampaigns(summary);
 
   if (clientLoading) {
     return <Shell><div className="empty"><h3>Cargando…</h3></div></Shell>;
@@ -186,14 +202,26 @@ export default function ResumenPage() {
 
       {err && <div className="err">{err}</div>}
 
-      {busy && (
+      {/* Loader a pantalla completa SOLO en la carga inicial (sin datos
+          previos que mostrar). En cualquier refresco posterior (cambio de
+          fecha, moneda, presupuesto) el resumen anterior se queda visible
+          y este aviso chico aparece arriba, para no sentir que la página
+          entera se recargó por ajustar un filtro. */}
+      {busy && !summary && (
         <div className="empty">
           <h3>Cargando datos de Meta<span className="loading-dots"><span /><span /><span /></span></h3>
         </div>
       )}
 
-      {!busy && !err && summary && (
+      {!err && summary && (
         <>
+          {busy && (
+            <div className="row" style={{ gap: 8, color: "var(--muted)", fontSize: 11.5, marginBottom: 16 }}>
+              <span className="loading-dots"><span /><span /><span /></span>
+              Actualizando…
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 24 }}>
             <div className="card" style={{ padding: 18 }}>
               <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Gasto total</div>
@@ -212,8 +240,8 @@ export default function ResumenPage() {
               </div>
             </div>
             <div className="card" style={{ padding: 18 }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Campañas activas</div>
-              <div style={{ fontSize: 22, fontWeight: 600 }} className="mono">{flattenCampaigns(summary).length}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Campañas</div>
+              <div style={{ fontSize: 22, fontWeight: 600 }} className="mono">{campaigns.length}</div>
             </div>
           </div>
 
@@ -236,9 +264,9 @@ export default function ResumenPage() {
             </div>
           )}
 
-          <h3 style={{ fontSize: 13, marginBottom: 10 }}>Top campañas por gasto</h3>
-          {topCampaigns.length === 0 ? (
-            <div className="empty"><h3>Sin actividad en el período</h3></div>
+          <h3 style={{ fontSize: 13, marginBottom: 10 }}>Campañas</h3>
+          {campaigns.length === 0 ? (
+            <div className="empty"><h3>Sin campañas activas o pausadas</h3></div>
           ) : (
             <div className="card" style={{ padding: 0, overflow: "hidden" }}>
               <table className="table">
@@ -247,15 +275,21 @@ export default function ResumenPage() {
                     <th>Campaña</th>
                     {summary.type === "multi-station" && <th>Cuenta</th>}
                     <th>Objetivo</th>
+                    <th>Estado</th>
                     <th>Gasto</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {topCampaigns.map((c) => (
+                  {campaigns.map((c) => (
                     <tr key={c.id}>
                       <td>{c.name}</td>
                       {summary.type === "multi-station" && <td>{c.station}</td>}
-                      <td>{c.objective}</td>
+                      <td>{objectiveLabel(c.objective)}</td>
+                      <td>
+                        <span className={`badge ${c.status === "ACTIVE" ? "badge-signal" : "badge-neutral"}`}>
+                          {statusLabel(c.status)}
+                        </span>
+                      </td>
                       <td className="mono">{money(c.spend, symbol)}</td>
                     </tr>
                   ))}

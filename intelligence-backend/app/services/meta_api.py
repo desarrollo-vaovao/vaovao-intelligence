@@ -344,7 +344,8 @@ def _extract_countries_from_targeting(targeting: dict | None) -> list[str]:
 
 async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
                                          date_from: str, date_to: str,
-                                         attribution_windows: list[str] | None = None) -> dict:
+                                         attribution_windows: list[str] | None = None,
+                                         include_inactive: bool = False) -> dict:
     """
     Igual que get_account_data, pero prueba varios tokens en orden (p. ej. el
     Facebook personal del usuario y, si a ESA cuenta le falta acceso, el token
@@ -355,7 +356,8 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
     last_error: MetaApiError | None = None
     for token in tokens:
         try:
-            return await get_account_data(token, ad_account_id, date_from, date_to, attribution_windows)
+            return await get_account_data(token, ad_account_id, date_from, date_to,
+                                          attribution_windows, include_inactive)
         except MetaApiError as e:
             last_error = e
     assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
@@ -477,7 +479,8 @@ async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id:
 
 
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
-                           attribution_windows: list[str] | None = None) -> dict:
+                           attribution_windows: list[str] | None = None,
+                           include_inactive: bool = False) -> dict:
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
@@ -490,6 +493,14 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     NO se filtra por effective_status: Meta tiene más estados posibles que
     "ACTIVE"/"PAUSED" (ej. ADSET_PAUSED, CAMPAIGN_PAUSED) y filtrar por esos
     dos nada más escondía anuncios legítimos que sí deberían aparecer.
+
+    `include_inactive=True` conserva las campañas ACTIVA/PAUSADA sin
+    insights en el período (spend=0, insights={}) en vez de descartarlas —
+    lo usa /reports/summary (panel de Resumen, ver report_builder), donde
+    la persona quiere ver SIEMPRE sus campañas activas/pausadas aunque el
+    rango de fechas elegido no tenga gasto todavía. El PDF (build_pdf) se
+    queda con el default False: ahí sí importa no inflar un reporte con
+    años de campañas viejas sin actividad (ver comentario más abajo).
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -538,7 +549,9 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             # con historial largo (años de campañas viejas que nunca se
             # archivaron) inflan el reporte a decenas de páginas de puras
             # rayitas ("—"), como pasaba con OLR.
-            continue
+            if not include_inactive:
+                continue
+            insights = {}
         campaign_ads = []
         for ad in ads_by_campaign.get(c["id"], []):
             creative = ad.get("creative") or {}

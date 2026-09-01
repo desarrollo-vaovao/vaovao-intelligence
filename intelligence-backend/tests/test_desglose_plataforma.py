@@ -65,7 +65,7 @@ def test_build_report_data_incluye_el_desglose_por_plataforma(monkeypatch, tenan
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None):
+                                                   attribution_windows=None, include_inactive=False):
         return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
 
     async def fake_get_platform_breakdown_with_fallback(tokens, ad_account_id, date_from, date_to):
@@ -94,7 +94,7 @@ def test_build_report_data_sin_gasto_no_pide_el_desglose(monkeypatch, tenant_a, 
     llamadas = []
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None):
+                                                   attribution_windows=None, include_inactive=False):
         return {"campaigns": [], "total_spend": 0.0}
 
     async def fake_get_platform_breakdown_with_fallback(tokens, ad_account_id, date_from, date_to):
@@ -124,7 +124,7 @@ def test_build_report_data_con_filtro_de_pais_omite_el_desglose(monkeypatch, ten
     campaign_con_pais["ads"] = [{"id": "ad1", "name": "Anuncio", "insights": {}, "countries": ["GT"]}]
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None):
+                                                   attribution_windows=None, include_inactive=False):
         return {"campaigns": [campaign_con_pais], "total_spend": 10.0}
 
     async def fake_get_platform_breakdown_with_fallback(tokens, ad_account_id, date_from, date_to):
@@ -149,7 +149,7 @@ def test_build_report_data_si_el_desglose_falla_el_reporte_sigue(monkeypatch, te
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None):
+                                                   attribution_windows=None, include_inactive=False):
         return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
 
     async def fake_get_platform_breakdown_with_fallback(tokens, ad_account_id, date_from, date_to):
@@ -170,7 +170,7 @@ def test_build_report_data_convierte_el_spend_del_desglose(monkeypatch, tenant_a
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None):
+                                                   attribution_windows=None, include_inactive=False):
         return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
 
     async def fake_get_platform_breakdown_with_fallback(tokens, ad_account_id, date_from, date_to):

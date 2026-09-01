@@ -191,10 +191,19 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
                             attribution_window: str | None = None,
                             campaign_metrics: dict[str, list[str]] | None = None,
                             campaign_comments: dict[str, str] | None = None,
-                            general_comment: str | None = None) -> dict:
+                            general_comment: str | None = None,
+                            include_inactive: bool = False) -> dict:
     """
     Construye el diccionario que pdf_generator sabe dibujar, para UN activo
     comercial.
+
+    `include_inactive` conserva en `campaigns` las que están ACTIVA/PAUSADA
+    en Meta pero sin gasto en el período (spend=0) — ver
+    meta_api.get_account_data. Lo usa /reports/summary (panel de Resumen):
+    ahí la persona quiere ver siempre sus campañas activas/pausadas, no que
+    aparezcan y desaparezcan según si el rango de fechas tuvo gasto. El PDF
+    (build_pdf) se queda en False: un reporte no debe inflarse con años de
+    campañas viejas sin actividad.
     `tokens` es una lista de candidatos en orden de preferencia (p. ej. el
     Facebook personal del usuario y, de respaldo, el token central de la
     organización): si el primero no tiene acceso a la cuenta, se reintenta con
@@ -217,7 +226,7 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
     """
     data = await meta_api.get_account_data_with_fallback(
         tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat(),
-        ATTRIBUTION_WINDOWS.get(attribution_window),
+        ATTRIBUTION_WINDOWS.get(attribution_window), include_inactive=include_inactive,
     )
     campaigns, filtered_spend = _filter_campaigns_by_country(data["campaigns"], country_code)
     total_spend = filtered_spend if country_code else data["total_spend"]

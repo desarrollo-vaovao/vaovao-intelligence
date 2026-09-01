@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth";
 import { useClient } from "@/lib/clients";
 import DateRangePicker, { periodoMensual, periodoQuincenal } from "@/lib/DateRangePicker";
 import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
+import { objectiveLabel } from "@/lib/objectives";
 
 // Mismas claves que pdf_generator.METRIC_REGISTRY (backend) — si se agrega
 // una métrica nueva ahí, se agrega aquí también.
@@ -25,23 +26,6 @@ const METRIC_CATALOG = [
   { key: "followers", label: "Seguidores" },
   { key: "cost_per_follower", label: "Costo / seg." },
 ];
-
-const OBJECTIVE_LABELS = {
-  LINK_CLICKS: "Tráfico", TRAFFIC: "Tráfico", MESSAGES: "Mensajes",
-  POST_ENGAGEMENT: "Interacción", PAGE_LIKES: "Seguidores", REACH: "Alcance",
-  BRAND_AWARENESS: "Reconocimiento", VIDEO_VIEWS: "Vistas de video",
-  LEAD_GENERATION: "Leads", CONVERSIONS: "Conversiones",
-  // Taxonomía nueva de Meta (ODAX) — reemplazó a los objetivos de arriba,
-  // pero varias cuentas siguen devolviendo la vieja según cuándo se creó la
-  // campaña. Sin esto, el objetivo salía como el código crudo de la API
-  // (ej. "OUTCOME_ENGAGEMENT") en vez de una etiqueta traducida.
-  OUTCOME_AWARENESS: "Reconocimiento", OUTCOME_TRAFFIC: "Tráfico",
-  OUTCOME_ENGAGEMENT: "Interacción", OUTCOME_LEADS: "Leads",
-  OUTCOME_SALES: "Ventas", OUTCOME_APP_PROMOTION: "Promoción de app",
-};
-function objectiveLabel(obj) {
-  return OBJECTIVE_LABELS[obj] || obj || "—";
-}
 
 export default function ReportesPage() {
   const { client } = useClient() || {};
