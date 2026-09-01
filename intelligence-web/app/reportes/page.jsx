@@ -66,6 +66,7 @@ export default function ReportesPage() {
 
   const [showCustomize, setShowCustomize] = useState(false);
   const [campaignsPreview, setCampaignsPreview] = useState([]);
+  const [campaignsError, setCampaignsError] = useState("");
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
   const [campaignMetrics, setCampaignMetrics] = useState({});
   const [campaignComments, setCampaignComments] = useState({});
@@ -117,6 +118,7 @@ export default function ReportesPage() {
   async function loadCampaignsPreview() {
     if (!accountId || !dateFrom || !dateTo) return;
     setLoadingCampaigns(true);
+    setCampaignsError("");
     try {
       const response = await api.reportCampaigns(accountId, dateFrom, dateTo, countryCode || null);
       setCampaignsPreview(response.campaigns || []);
@@ -127,6 +129,7 @@ export default function ReportesPage() {
       setCampaignMetrics(initialMetrics);
     } catch (e) {
       setErr(e.message);
+      setCampaignsError(e.message);
       setCampaignsPreview([]);
     } finally {
       setLoadingCampaigns(false);
@@ -179,6 +182,7 @@ export default function ReportesPage() {
   // desplegarlo.
   useEffect(() => {
     setCampaignsPreview([]);
+    setCampaignsError("");
     setCampaignMetrics({});
     setCampaignComments({});
     setShowCustomize(false);
@@ -216,7 +220,7 @@ export default function ReportesPage() {
   async function generate() {
     setErr(""); setInfo(""); setBusy(true);
     try {
-      const personalizado = showCustomize && campaignsPreview.length > 0;
+      const personalizado = campaignsPreview.length > 0;
       const filename = await api.generateReport({
         ad_account_id: Number(accountId),
         report_type: reportType,
@@ -418,7 +422,6 @@ export default function ReportesPage() {
                   fontSize: 12, fontFamily: "inherit",
                 }}
               >
-                <span>▸</span>
                 Personalizar métricas y observaciones (opcional)
               </button>
             </div>
@@ -443,6 +446,7 @@ export default function ReportesPage() {
           <CustomizeReportModal
             campaigns={campaignsPreview}
             loading={loadingCampaigns}
+            error={campaignsError}
             search={campaignSearch}
             onSearchChange={setCampaignSearch}
             expandedId={expandedCampaignId}
@@ -462,7 +466,7 @@ export default function ReportesPage() {
 }
 
 function CustomizeReportModal({
-  campaigns, loading, search, onSearchChange,
+  campaigns, loading, error, search, onSearchChange,
   expandedId, onToggleExpand,
   campaignMetrics, onToggleMetric,
   campaignComments, onCampaignComment,
@@ -485,17 +489,13 @@ function CustomizeReportModal({
 
   return (
     <div
+      className="overlay"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
-      style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        zIndex: 1000, padding: 20,
-      }}
     >
       <div
-        className="card"
+        className="modal"
         style={{
           width: "100%", maxWidth: 640, maxHeight: "85vh",
           display: "flex", flexDirection: "column", padding: 0, overflow: "hidden",
@@ -531,14 +531,16 @@ function CustomizeReportModal({
           />
         </div>
 
-        <div style={{ overflowY: "auto", flex: 1, padding: "0 20px" }}>
+        <div style={{ overflowY: "auto", overscrollBehavior: "contain", flex: 1, padding: "0 20px" }}>
           {loading && (
             <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>
               Cargando campañas…
             </div>
           )}
 
-          {!loading && campaigns.length === 0 && (
+          {!loading && error && <div className="err">{error}</div>}
+
+          {!loading && !error && campaigns.length === 0 && (
             <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>
               No se encontraron campañas con datos en este período.
             </div>
