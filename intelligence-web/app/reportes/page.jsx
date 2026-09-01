@@ -577,11 +577,11 @@ function CustomizeReportModal({
                     onClick={() => onToggleExpand(expanded ? null : c.id)}
                     style={{
                       width: "100%", display: "flex", justifyContent: "space-between",
-                      alignItems: "center", padding: 12, background: "var(--gradient)",
+                      alignItems: "center", padding: "14px 16px", background: "var(--gradient)",
                       border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                     }}
                   >
-                    <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                       <span style={{
                         fontSize: 12, fontWeight: 500, color: "#fff", overflow: "hidden",
                         textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -595,24 +595,33 @@ function CustomizeReportModal({
                         {objectiveLabel(c.objective)}
                       </span>
                     </span>
-                    <span style={{ color: "rgba(255,255,255,.85)", flexShrink: 0, marginLeft: 8 }}>
+                    <span style={{ color: "rgba(255,255,255,.85)", flexShrink: 0, marginLeft: 10 }}>
                       {expanded ? "▾" : "▸"}
                     </span>
                   </button>
 
                   {expanded && (
-                    <div style={{ padding: "0 12px 12px" }}>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                        {METRIC_CATALOG.map((m) => (
-                          <label key={m.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-                            <input
-                              type="checkbox"
-                              checked={(campaignMetrics[c.id] || []).includes(m.key)}
-                              onChange={() => onToggleMetric(c.id, m.key)}
-                            />
-                            {m.label}
-                          </label>
-                        ))}
+                    <div style={{ padding: "14px 16px 16px" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+                        {METRIC_CATALOG.map((m) => {
+                          const active = (campaignMetrics[c.id] || []).includes(m.key);
+                          return (
+                            <button
+                              key={m.key}
+                              type="button"
+                              onClick={() => onToggleMetric(c.id, m.key)}
+                              style={{
+                                padding: "6px 12px", borderRadius: 99, fontSize: 11,
+                                fontFamily: "inherit", border: "none", cursor: "pointer",
+                                transition: "all .15s", color: "#fff",
+                                fontWeight: active ? 500 : 400,
+                                background: active ? "rgba(255,255,255,.20)" : "transparent",
+                              }}
+                            >
+                              {m.label}
+                            </button>
+                          );
+                        })}
                       </div>
                       <textarea
                         className="input"
