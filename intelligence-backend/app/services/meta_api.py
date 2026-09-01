@@ -436,26 +436,29 @@ async def get_platform_breakdown(token: str, ad_account_id: str,
                                  date_from: str, date_to: str) -> list[dict]:
     """
     Gasto/alcance de TODA la cuenta en el período, desglosado por
-    plataforma de publicación (Facebook vs Instagram, etc.) y por país —
-    para el resumen "Facebook vs Instagram" al final del reporte.
+    plataforma de publicación (Facebook vs Instagram, etc.) — para el
+    resumen "Facebook vs Instagram" al final del reporte.
 
     Es una consulta SÍNCRONA (a diferencia de _run_insights_job): el
-    breakdown produce a lo mucho unas pocas decenas de filas (plataformas ×
-    países) sin importar cuántas campañas/anuncios tenga la cuenta, muy
-    lejos del límite de tamaño que obliga a la vía asíncrona para insights
-    por campaña/anuncio.
+    breakdown produce a lo mucho unas pocas filas (una por plataforma) sin
+    importar cuántas campañas/anuncios tenga la cuenta, muy lejos del
+    límite de tamaño que obliga a la vía asíncrona para insights por
+    campaña/anuncio.
 
-    Se pide el breakdown de país también porque el reporte puede filtrarse
-    por país (ver report_builder._filter_campaigns_by_country): sin esa
-    dimensión, el desglose de plataforma mezclaría todos los países y no
-    coincidiría con el resto del reporte cuando hay un filtro activo.
+    SOLO por plataforma, sin cruzar con país: combinar publisher_platform
+    con country dispara "(#100) Current combination of data breakdown
+    columns ... is invalid" en cuentas reales (confirmado en producción,
+    no documentado claramente por Meta). Por eso este desglose es SIEMPRE
+    de la cuenta completa — report_builder lo omite cuando el reporte
+    tiene un filtro de país activo, en vez de mostrar un total que no
+    coincidiría con las campañas ya filtradas.
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         return await _get_all(client, f"{ad_account_id}/insights", token, {
             "level": "account",
             "fields": "spend,impressions,reach,clicks",
-            "breakdowns": "publisher_platform,country",
+            "breakdowns": "publisher_platform",
             "time_range": time_range,
         })
 

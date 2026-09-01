@@ -94,11 +94,11 @@ def _convert_money(campaigns: list[dict], total_spend: float, factor: float) -> 
     return converted, total_spend * factor
 
 
-def _aggregate_platform_breakdown(rows: list[dict], country_code: str | None) -> list[dict]:
+def _aggregate_platform_breakdown(rows: list[dict]) -> list[dict]:
     """
-    Junta las filas plataforma×país que devuelve Meta (ver
+    Junta las filas por plataforma que devuelve Meta (ver
     meta_api.get_platform_breakdown) en una lista de plataformas con sus
-    totales, filtrando por país si el reporte tiene ese filtro activo.
+    totales.
 
     Plataformas sin gasto en el período no aparecen — no tiene sentido
     mostrar una fila en cero en un resumen que es, precisamente, sobre en
@@ -108,8 +108,6 @@ def _aggregate_platform_breakdown(rows: list[dict], country_code: str | None) ->
     for row in rows:
         platform = row.get("publisher_platform")
         if platform not in meta_api.PLATFORM_LABELS:
-            continue
-        if country_code and row.get("country") != country_code:
             continue
         bucket = totals.setdefault(platform, {"spend": 0.0, "impressions": 0, "reach": 0, "clicks": 0})
         bucket["spend"] += float(row.get("spend") or 0)
@@ -234,17 +232,22 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
         campaigns = _apply_customization(campaigns, campaign_metrics, campaign_comments)
 
     platform_breakdown: list[dict] = []
-    if total_spend:
-        # No tiene sentido pedirle este desglose a Meta a una cuenta sin
-        # gasto en el período — solo devolvería filas vacías. Un fallo acá
-        # (ej. rate limit puntual) no debe tirar el reporte completo, que ya
-        # tiene los datos que sí importan: el resumen Facebook/Instagram es
-        # un extra, no el corazón del reporte.
+    if total_spend and not country_code:
+        # Sin gasto no tiene sentido pedirle este desglose a Meta — solo
+        # devolvería filas vacías. Con un filtro de país activo se omite
+        # directamente: Meta no permite cruzar publisher_platform con
+        # country (ver meta_api.get_platform_breakdown), así que ese total
+        # sería siempre de TODA la cuenta y no coincidiría con las
+        # campañas ya filtradas por país — más confuso que no mostrarlo.
+        #
+        # Un fallo acá (ej. rate limit puntual) no debe tirar el reporte
+        # completo, que ya tiene los datos que sí importan: el resumen
+        # Facebook/Instagram es un extra, no el corazón del reporte.
         try:
             raw_breakdown = await meta_api.get_platform_breakdown_with_fallback(
                 tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat(),
             )
-            platform_breakdown = _aggregate_platform_breakdown(raw_breakdown, country_code)
+            platform_breakdown = _aggregate_platform_breakdown(raw_breakdown)
             if factor is not None and factor != 1.0:
                 platform_breakdown = _convert_platform_breakdown(platform_breakdown, factor)
         except meta_api.MetaApiError as e:
