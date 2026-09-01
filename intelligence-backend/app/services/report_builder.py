@@ -91,6 +91,42 @@ def _convert_money(campaigns: list[dict], total_spend: float, factor: float) -> 
     return converted, total_spend * factor
 
 
+def _aggregate_platform_breakdown(rows: list[dict], country_code: str | None) -> list[dict]:
+    """
+    Junta las filas plataforma×país que devuelve Meta (ver
+    meta_api.get_platform_breakdown) en una lista de plataformas con sus
+    totales, filtrando por país si el reporte tiene ese filtro activo.
+
+    Plataformas sin gasto en el período no aparecen — no tiene sentido
+    mostrar una fila en cero en un resumen que es, precisamente, sobre en
+    qué se fue el gasto.
+    """
+    totals: dict[str, dict] = {}
+    for row in rows:
+        platform = row.get("publisher_platform")
+        if platform not in meta_api.PLATFORM_LABELS:
+            continue
+        if country_code and row.get("country") != country_code:
+            continue
+        bucket = totals.setdefault(platform, {"spend": 0.0, "impressions": 0, "reach": 0, "clicks": 0})
+        bucket["spend"] += float(row.get("spend") or 0)
+        bucket["impressions"] += int(float(row.get("impressions") or 0))
+        bucket["reach"] += int(float(row.get("reach") or 0))
+        bucket["clicks"] += int(float(row.get("clicks") or 0))
+
+    return [
+        {"platform": platform, "label": meta_api.PLATFORM_LABELS[platform], **values}
+        for platform, values in sorted(totals.items(), key=lambda kv: kv[1]["spend"], reverse=True)
+        if values["spend"] > 0
+    ]
+
+
+def _convert_platform_breakdown(breakdown: list[dict], factor: float) -> list[dict]:
+    """Aplica el mismo factor de cambio que _convert_money, solo a `spend`
+    (impressions/reach/clicks no son dinero)."""
+    return [{**row, "spend": row["spend"] * factor} for row in breakdown]
+
+
 def format_period(date_from: date, date_to: date) -> str:
     """Ej.: '1 – 15 jun 2026' o '20 may – 5 jun 2026' si cruza meses."""
     if date_from.month == date_to.month and date_from.year == date_to.year:
@@ -194,6 +230,23 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
     if campaign_metrics or campaign_comments:
         campaigns = _apply_customization(campaigns, campaign_metrics, campaign_comments)
 
+    platform_breakdown: list[dict] = []
+    if total_spend:
+        # No tiene sentido pedirle este desglose a Meta a una cuenta sin
+        # gasto en el período — solo devolvería filas vacías. Un fallo acá
+        # (ej. rate limit puntual) no debe tirar el reporte completo, que ya
+        # tiene los datos que sí importan: el resumen Facebook/Instagram es
+        # un extra, no el corazón del reporte.
+        try:
+            raw_breakdown = await meta_api.get_platform_breakdown_with_fallback(
+                tokens, account.meta_ad_account_id, date_from.isoformat(), date_to.isoformat(),
+            )
+            platform_breakdown = _aggregate_platform_breakdown(raw_breakdown, country_code)
+            if factor is not None and factor != 1.0:
+                platform_breakdown = _convert_platform_breakdown(platform_breakdown, factor)
+        except meta_api.MetaApiError:
+            platform_breakdown = []
+
     return {
         "client_name": account.label,
         "period": format_period(date_from, date_to),
@@ -203,6 +256,7 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
         "currency_symbol": CURRENCY_SYMBOLS.get(currency, "$"),
         "country_code": country_code,
         "general_comment": general_comment,
+        "platform_breakdown": platform_breakdown,
     }
 
 

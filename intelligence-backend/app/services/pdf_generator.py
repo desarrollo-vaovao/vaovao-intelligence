@@ -328,6 +328,64 @@ def render_campaign_card(campaign: dict, currency_symbol: str = "$") -> str:
     """
 
 
+_PLATFORM_DOT_COLOR = {
+    "facebook": "#1877F2",
+    "instagram": "#E1306C",
+    "audience_network": "#8A8D91",
+    "messenger": "#00B2FF",
+}
+
+
+def _platform_breakdown_block(platform_breakdown: list[dict], total_spend: float, currency_symbol: str) -> str:
+    """
+    Sección "Facebook vs Instagram" al final del reporte: en qué plataforma
+    de publicación se fue el gasto, no por campaña sino de toda la cuenta
+    en el período (ver report_builder._aggregate_platform_breakdown).
+
+    Vacío cuando Meta no devolvió el desglose (cuenta sin gasto, o el
+    desglose falló y report_builder ya lo dejó en []) — sin esto se vería
+    una tabla con encabezados y cero filas, más confuso que no mostrarla.
+    """
+    if not platform_breakdown:
+        return ""
+
+    rows = "".join(
+        f"""
+              <tr>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;color:#111;">
+                  <div style="display:flex;align-items:center;gap:7px;">
+                    <div style="width:7px;height:7px;border-radius:50%;background:{_PLATFORM_DOT_COLOR.get(row["platform"], "#ccc")};flex-shrink:0;"></div>
+                    {row["label"]}
+                  </div>
+                </td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;font-weight:500;color:#111;">{fmt_currency(row["spend"], currency_symbol)}</td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;color:#888;">{fmt_percent(row["spend"] / total_spend * 100 if total_spend else 0)}</td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;color:#888;">{fmt_number(row["impressions"])}</td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;color:#888;">{fmt_number(row["reach"])}</td>
+                <td style="padding:7px 8px;border-bottom:0.5px solid #f0f0f0;text-align:right;color:#888;">{fmt_number(row["clicks"])}</td>
+              </tr>"""
+        for row in platform_breakdown
+    )
+
+    return f"""
+        <div style="border-top:0.5px solid #e0e0e0;margin:16px 0;"></div>
+
+        <div style="font-size:10px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">Facebook vs Instagram</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:left;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">Plataforma</th>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:right;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">Consumido</th>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:right;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">% del total</th>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:right;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">Impresiones</th>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:right;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">Alcance</th>
+              <th style="font-size:10px;font-weight:500;color:#888;text-align:right;padding:4px 8px;border-bottom:0.5px solid #e0e0e0;">Clics</th>
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>"""
+
+
 # ── Render de la página del reporte ───────────────────────────
 def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
     client_name = report_data.get("client_name", "")
@@ -391,6 +449,10 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
 
     cards = "".join(render_campaign_card(c, currency_symbol) for c in campaigns)
 
+    platform_block = _platform_breakdown_block(
+        report_data.get("platform_breakdown") or [], total_spend, currency_symbol
+    )
+
     return f"""
     <div style="width:100%;background:#fff;page-break-after:always;">
       <div style="background:#111;color:#fff;padding:16px 28px;display:flex;justify-content:space-between;align-items:center;">
@@ -443,6 +505,8 @@ def render_report_page(report_data: dict, currency_symbol: str = "$") -> str:
 
         <div style="font-size:10px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px;">Performance por campaña</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">{cards}</div>
+
+        {platform_block}
       </div>
 
       <div style="background:#111;color:#666;padding:8px 28px;display:flex;justify-content:space-between;font-size:10px;">

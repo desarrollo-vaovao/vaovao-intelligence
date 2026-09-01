@@ -420,6 +420,59 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
     return await _get_all(client, f"{report_run_id}/insights", token, {"limit": _PAGE_SIZE})
 
 
+# Plataformas de publicación que Meta reconoce en el breakdown
+# `publisher_platform`. audience_network/messenger casi nunca tienen gasto
+# en las cuentas de VaoVao, pero se incluyen para no ocultar gasto real si
+# alguna campaña sí los usa como placement.
+PLATFORM_LABELS = {
+    "facebook": "Facebook",
+    "instagram": "Instagram",
+    "audience_network": "Audience Network",
+    "messenger": "Messenger",
+}
+
+
+async def get_platform_breakdown(token: str, ad_account_id: str,
+                                 date_from: str, date_to: str) -> list[dict]:
+    """
+    Gasto/alcance de TODA la cuenta en el período, desglosado por
+    plataforma de publicación (Facebook vs Instagram, etc.) y por país —
+    para el resumen "Facebook vs Instagram" al final del reporte.
+
+    Es una consulta SÍNCRONA (a diferencia de _run_insights_job): el
+    breakdown produce a lo mucho unas pocas decenas de filas (plataformas ×
+    países) sin importar cuántas campañas/anuncios tenga la cuenta, muy
+    lejos del límite de tamaño que obliga a la vía asíncrona para insights
+    por campaña/anuncio.
+
+    Se pide el breakdown de país también porque el reporte puede filtrarse
+    por país (ver report_builder._filter_campaigns_by_country): sin esa
+    dimensión, el desglose de plataforma mezclaría todos los países y no
+    coincidiría con el resto del reporte cuando hay un filtro activo.
+    """
+    time_range = json.dumps({"since": date_from, "until": date_to})
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        return await _get_all(client, f"{ad_account_id}/insights", token, {
+            "level": "account",
+            "fields": "spend,impressions,reach,clicks",
+            "breakdowns": "publisher_platform,country",
+            "time_range": time_range,
+        })
+
+
+async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id: str,
+                                               date_from: str, date_to: str) -> list[dict]:
+    """Igual que get_platform_breakdown, probando varios tokens en orden."""
+    last_error: MetaApiError | None = None
+    for token in tokens:
+        try:
+            return await get_platform_breakdown(token, ad_account_id, date_from, date_to)
+        except MetaApiError as e:
+            last_error = e
+    assert last_error is not None
+    raise last_error
+
+
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
                            attribution_windows: list[str] | None = None) -> dict:
     """

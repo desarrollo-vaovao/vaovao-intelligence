@@ -473,3 +473,29 @@ def tenant_a(factory: Factory) -> Tenant:
 @pytest.fixture()
 def tenant_b(factory: Factory) -> Tenant:
     return Tenant(factory, "Agencia B")
+
+
+@pytest.fixture(autouse=True)
+def _sin_llamada_real_de_desglose_por_plataforma(monkeypatch):
+    """
+    report_builder.build_report_data pide, además de campañas, el desglose
+    Facebook/Instagram (meta_api.get_platform_breakdown_with_fallback) cada
+    vez que hay gasto — ver test_desglose_plataforma.py. Sin este default,
+    cualquier prueba existente que simule una cuenta con spend > 0 (y no
+    mockea esta llamada porque no le importa) terminaría golpeando la Graph
+    API real con un token falso.
+
+    Se mockea la función de BAJO nivel (get_platform_breakdown), no
+    get_platform_breakdown_with_fallback: así una prueba que sí quiere
+    ejercitar la lógica de reintento entre tokens de esta última (ver
+    test_get_platform_breakdown_with_fallback_prueba_el_siguiente_token)
+    puede sobreescribir get_platform_breakdown sin que este default la
+    tape — si el mock fuera sobre with_fallback, cualquier override hecho
+    sobre la función de bajo nivel quedaría sin efecto.
+    """
+    from app.services import meta_api
+
+    async def fake_get_platform_breakdown(token, ad_account_id, date_from, date_to):
+        return []
+
+    monkeypatch.setattr(meta_api, "get_platform_breakdown", fake_get_platform_breakdown)
