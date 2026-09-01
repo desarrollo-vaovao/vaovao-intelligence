@@ -8,11 +8,14 @@ Meta (meta_api) y los arma en la estructura que espera pdf_generator. Es el
 Un reporte es siempre de UN activo comercial: los activos de un mismo cliente
 pueden ser marcas sin relación entre sí, y mezclarlas en un PDF no sirve.
 """
+import logging
 from datetime import date
 
 from app.models import AdAccount
 from app.schemas import ATTRIBUTION_WINDOWS
 from app.services import meta_api, pdf_generator, perf
+
+log = logging.getLogger(__name__)
 
 _MESES = ["ene", "feb", "mar", "abr", "may", "jun",
           "jul", "ago", "sep", "oct", "nov", "dic"]
@@ -244,7 +247,9 @@ async def build_report_data(account: AdAccount, tokens: list[str], date_from: da
             platform_breakdown = _aggregate_platform_breakdown(raw_breakdown, country_code)
             if factor is not None and factor != 1.0:
                 platform_breakdown = _convert_platform_breakdown(platform_breakdown, factor)
-        except meta_api.MetaApiError:
+        except meta_api.MetaApiError as e:
+            log.warning("No se pudo traer el desglose Facebook/Instagram de %s: %s",
+                       account.meta_ad_account_id, e)
             platform_breakdown = []
 
     return {
