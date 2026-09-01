@@ -577,22 +577,25 @@ function CustomizeReportModal({
                     onClick={() => onToggleExpand(expanded ? null : c.id)}
                     style={{
                       width: "100%", display: "flex", justifyContent: "space-between",
-                      alignItems: "center", padding: 12, background: "none", border: "none",
-                      cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                      alignItems: "center", padding: 12, background: "var(--gradient)",
+                      border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                     }}
                   >
                     <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                       <span style={{
-                        fontSize: 12, fontWeight: 500, overflow: "hidden",
+                        fontSize: 12, fontWeight: 500, color: "#fff", overflow: "hidden",
                         textOverflow: "ellipsis", whiteSpace: "nowrap",
                       }}>
                         {c.name}
                       </span>
-                      <span className="badge badge-warn" style={{ flexShrink: 0 }}>
+                      <span
+                        className="badge"
+                        style={{ flexShrink: 0, background: "rgba(255,255,255,.22)", color: "#fff" }}
+                      >
                         {objectiveLabel(c.objective)}
                       </span>
                     </span>
-                    <span style={{ color: "var(--muted)", flexShrink: 0, marginLeft: 8 }}>
+                    <span style={{ color: "rgba(255,255,255,.85)", flexShrink: 0, marginLeft: 8 }}>
                       {expanded ? "▾" : "▸"}
                     </span>
                   </button>
