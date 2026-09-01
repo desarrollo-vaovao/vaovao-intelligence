@@ -31,6 +31,13 @@ const OBJECTIVE_LABELS = {
   POST_ENGAGEMENT: "Interacción", PAGE_LIKES: "Seguidores", REACH: "Alcance",
   BRAND_AWARENESS: "Reconocimiento", VIDEO_VIEWS: "Vistas de video",
   LEAD_GENERATION: "Leads", CONVERSIONS: "Conversiones",
+  // Taxonomía nueva de Meta (ODAX) — reemplazó a los objetivos de arriba,
+  // pero varias cuentas siguen devolviendo la vieja según cuándo se creó la
+  // campaña. Sin esto, el objetivo salía como el código crudo de la API
+  // (ej. "OUTCOME_ENGAGEMENT") en vez de una etiqueta traducida.
+  OUTCOME_AWARENESS: "Reconocimiento", OUTCOME_TRAFFIC: "Tráfico",
+  OUTCOME_ENGAGEMENT: "Interacción", OUTCOME_LEADS: "Leads",
+  OUTCOME_SALES: "Ventas", OUTCOME_APP_PROMOTION: "Promoción de app",
 };
 function objectiveLabel(obj) {
   return OBJECTIVE_LABELS[obj] || obj || "—";
@@ -416,12 +423,20 @@ export default function ReportesPage() {
               <button
                 type="button"
                 onClick={openCustomize}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6, background: "none",
-                  border: "none", padding: 0, cursor: "pointer", color: "var(--muted)",
-                  fontSize: 12, fontFamily: "inherit",
-                }}
+                className="btn btn-ghost"
+                style={{ width: "100%", justifyContent: "center" }}
               >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+                  <line x1="4" y1="21" x2="4" y2="14"></line>
+                  <line x1="4" y1="10" x2="4" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12" y2="3"></line>
+                  <line x1="20" y1="21" x2="20" y2="16"></line>
+                  <line x1="20" y1="12" x2="20" y2="3"></line>
+                  <line x1="1" y1="14" x2="7" y2="14"></line>
+                  <line x1="9" y1="8" x2="15" y2="8"></line>
+                  <line x1="17" y1="16" x2="23" y2="16"></line>
+                </svg>
                 Personalizar métricas y observaciones (opcional)
               </button>
             </div>
@@ -566,13 +581,20 @@ function CustomizeReportModal({
                       cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                     }}
                   >
-                    <span style={{ fontSize: 12, fontWeight: 500 }}>
-                      {c.name}{" "}
-                      <span style={{ color: "var(--muted)", fontWeight: 400 }}>
-                        · {objectiveLabel(c.objective)}
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{
+                        fontSize: 12, fontWeight: 500, overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        {c.name}
+                      </span>
+                      <span className="badge badge-warn" style={{ flexShrink: 0 }}>
+                        {objectiveLabel(c.objective)}
                       </span>
                     </span>
-                    <span style={{ color: "var(--muted)" }}>{expanded ? "▾" : "▸"}</span>
+                    <span style={{ color: "var(--muted)", flexShrink: 0, marginLeft: 8 }}>
+                      {expanded ? "▾" : "▸"}
+                    </span>
                   </button>
 
                   {expanded && (
