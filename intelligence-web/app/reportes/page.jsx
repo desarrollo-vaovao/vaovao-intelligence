@@ -70,6 +70,8 @@ export default function ReportesPage() {
   const [campaignMetrics, setCampaignMetrics] = useState({});
   const [campaignComments, setCampaignComments] = useState({});
   const [generalComment, setGeneralComment] = useState("");
+  const [campaignSearch, setCampaignSearch] = useState("");
+  const [expandedCampaignId, setExpandedCampaignId] = useState(null);
 
   useEffect(() => {
     api.reportStatus().then(setStatus).catch((e) => setErr(e.message));
@@ -131,12 +133,15 @@ export default function ReportesPage() {
     }
   }
 
-  function toggleCustomize() {
-    const next = !showCustomize;
-    setShowCustomize(next);
-    if (next && campaignsPreview.length === 0) {
+  function openCustomize() {
+    setShowCustomize(true);
+    if (campaignsPreview.length === 0) {
       loadCampaignsPreview();
     }
+  }
+
+  function closeCustomize() {
+    setShowCustomize(false);
   }
 
   function toggleMetric(campaignId, key) {
@@ -177,6 +182,8 @@ export default function ReportesPage() {
     setCampaignMetrics({});
     setCampaignComments({});
     setShowCustomize(false);
+    setCampaignSearch("");
+    setExpandedCampaignId(null);
   }, [accountId, dateFrom, dateTo, countryCode]);
 
   // Al cambiar el tipo de reporte, se llenan las fechas solas
@@ -404,75 +411,16 @@ export default function ReportesPage() {
             <div className="field">
               <button
                 type="button"
-                onClick={toggleCustomize}
+                onClick={openCustomize}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, background: "none",
                   border: "none", padding: 0, cursor: "pointer", color: "var(--muted)",
                   fontSize: 12, fontFamily: "inherit",
                 }}
               >
-                <span>{showCustomize ? "▾" : "▸"}</span>
+                <span>▸</span>
                 Personalizar métricas y observaciones (opcional)
               </button>
-
-              {showCustomize && (
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 14 }}>
-                  {loadingCampaigns && (
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>Cargando campañas…</div>
-                  )}
-
-                  {!loadingCampaigns && campaignsPreview.length === 0 && (
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                      No se encontraron campañas con datos en este período.
-                    </div>
-                  )}
-
-                  {campaignsPreview.map((c) => (
-                    <div key={c.id} className="card" style={{ padding: 12 }}>
-                      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
-                        {c.name}{" "}
-                        <span style={{ color: "var(--muted)", fontWeight: 400 }}>
-                          · {objectiveLabel(c.objective)}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                        {METRIC_CATALOG.map((m) => (
-                          <label key={m.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-                            <input
-                              type="checkbox"
-                              checked={(campaignMetrics[c.id] || []).includes(m.key)}
-                              onChange={() => toggleMetric(c.id, m.key)}
-                            />
-                            {m.label}
-                          </label>
-                        ))}
-                      </div>
-                      <textarea
-                        className="input"
-                        placeholder="Observaciones de esta campaña (opcional)"
-                        value={campaignComments[c.id] || ""}
-                        onChange={(e) => setCampaignComment(c.id, e.target.value)}
-                        maxLength={2000}
-                        style={{ width: "100%", minHeight: 50, resize: "vertical", fontSize: 12 }}
-                      />
-                    </div>
-                  ))}
-
-                  {campaignsPreview.length > 0 && (
-                    <div className="field" style={{ margin: 0 }}>
-                      <label>Observaciones generales del período</label>
-                      <textarea
-                        className="input"
-                        value={generalComment}
-                        onChange={(e) => setGeneralComment(e.target.value)}
-                        maxLength={2000}
-                        style={{ width: "100%", minHeight: 70, resize: "vertical" }}
-                        placeholder="Lo que vieron en el mes…"
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
 
@@ -490,7 +438,196 @@ export default function ReportesPage() {
             ) : ready ? "Generar y descargar PDF" : "Generar (bloqueado)"}
           </button>
         </div>
+
+        {showCustomize && (
+          <CustomizeReportModal
+            campaigns={campaignsPreview}
+            loading={loadingCampaigns}
+            search={campaignSearch}
+            onSearchChange={setCampaignSearch}
+            expandedId={expandedCampaignId}
+            onToggleExpand={setExpandedCampaignId}
+            campaignMetrics={campaignMetrics}
+            onToggleMetric={toggleMetric}
+            campaignComments={campaignComments}
+            onCampaignComment={setCampaignComment}
+            generalComment={generalComment}
+            onGeneralComment={setGeneralComment}
+            onClose={closeCustomize}
+          />
+        )}
       </div>
     </Shell>
+  );
+}
+
+function CustomizeReportModal({
+  campaigns, loading, search, onSearchChange,
+  expandedId, onToggleExpand,
+  campaignMetrics, onToggleMetric,
+  campaignComments, onCampaignComment,
+  generalComment, onGeneralComment,
+  onClose,
+}) {
+  // Cerrar con Escape — el clic en el fondo se maneja en el overlay más abajo.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const term = search.trim().toLowerCase();
+  const filtered = term
+    ? campaigns.filter((c) => (c.name || "").toLowerCase().includes(term))
+    : campaigns;
+
+  return (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000, padding: 20,
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          width: "100%", maxWidth: 640, maxHeight: "85vh",
+          display: "flex", flexDirection: "column", padding: 0, overflow: "hidden",
+        }}
+      >
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "16px 20px", borderBottom: "1px solid var(--border2)", flexShrink: 0,
+        }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>
+            Personalizar métricas y observaciones
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Cerrar"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              color: "var(--muted)", fontSize: 16, padding: 4, lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ padding: "12px 20px", flexShrink: 0 }}>
+          <input
+            className="input"
+            placeholder="Buscar campaña por nombre…"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div style={{ overflowY: "auto", flex: 1, padding: "0 20px" }}>
+          {loading && (
+            <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>
+              Cargando campañas…
+            </div>
+          )}
+
+          {!loading && campaigns.length === 0 && (
+            <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>
+              No se encontraron campañas con datos en este período.
+            </div>
+          )}
+
+          {!loading && campaigns.length > 0 && filtered.length === 0 && (
+            <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>
+              Sin resultados para &quot;{search}&quot;.
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8 }}>
+            {filtered.map((c) => {
+              const expanded = expandedId === c.id;
+              return (
+                <div key={c.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+                  <button
+                    type="button"
+                    onClick={() => onToggleExpand(expanded ? null : c.id)}
+                    style={{
+                      width: "100%", display: "flex", justifyContent: "space-between",
+                      alignItems: "center", padding: 12, background: "none", border: "none",
+                      cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 500 }}>
+                      {c.name}{" "}
+                      <span style={{ color: "var(--muted)", fontWeight: 400 }}>
+                        · {objectiveLabel(c.objective)}
+                      </span>
+                    </span>
+                    <span style={{ color: "var(--muted)" }}>{expanded ? "▾" : "▸"}</span>
+                  </button>
+
+                  {expanded && (
+                    <div style={{ padding: "0 12px 12px" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                        {METRIC_CATALOG.map((m) => (
+                          <label key={m.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                            <input
+                              type="checkbox"
+                              checked={(campaignMetrics[c.id] || []).includes(m.key)}
+                              onChange={() => onToggleMetric(c.id, m.key)}
+                            />
+                            {m.label}
+                          </label>
+                        ))}
+                      </div>
+                      <textarea
+                        className="input"
+                        placeholder="Observaciones de esta campaña (opcional)"
+                        value={campaignComments[c.id] || ""}
+                        onChange={(e) => onCampaignComment(c.id, e.target.value)}
+                        maxLength={2000}
+                        style={{ width: "100%", minHeight: 50, resize: "vertical", fontSize: 12 }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border2)", flexShrink: 0 }}>
+          <div className="field" style={{ margin: 0 }}>
+            <label>Observaciones generales del período</label>
+            <textarea
+              className="input"
+              value={generalComment}
+              onChange={(e) => onGeneralComment(e.target.value)}
+              maxLength={2000}
+              style={{ width: "100%", minHeight: 60, resize: "vertical" }}
+              placeholder="Lo que vieron en el mes…"
+            />
+          </div>
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border2)", flexShrink: 0 }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onClose}
+            style={{ width: "100%", justifyContent: "center" }}
+          >
+            Listo
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
