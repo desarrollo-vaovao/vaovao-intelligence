@@ -4,6 +4,32 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "./auth";
 import { useClient } from "./clients";
+import { useTheme } from "./theme";
+
+const THEME_OPTIONS = [
+  {
+    value: "light", label: "Claro",
+    icon: (
+      <>
+        <circle cx="12" cy="12" r="4.2"></circle>
+        <path d="M12 2.5v2.4M12 19.1v2.4M4.6 4.6l1.7 1.7M17.7 17.7l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.6 19.4l1.7-1.7M17.7 6.3l1.7-1.7"></path>
+      </>
+    ),
+  },
+  {
+    value: "dark", label: "Oscuro",
+    icon: <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5Z"></path>,
+  },
+  {
+    value: "system", label: "Sistema",
+    icon: (
+      <>
+        <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+        <path d="M8.5 20h7M12 16.5V20"></path>
+      </>
+    ),
+  },
+];
 
 const NAV = [
   {
@@ -101,6 +127,7 @@ const LABELS = {
 
 export default function Shell({ children }) {
   const { user, loading, logout } = useAuth();
+  const { preference, setTheme } = useTheme() || {};
   const clientCtx = useClient() || {};
   const { client, clients, setClient, loading: clientsLoading } = clientCtx;
   const pathname = usePathname();
@@ -191,6 +218,17 @@ export default function Shell({ children }) {
         <header className="header-bar">
           <span className="header-crumb">{LABELS[pathname] || ""}</span>
           <div className="header-actions">
+            <div className="theme-switch" role="group" aria-label="Tema">
+              {THEME_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value} type="button" title={opt.label}
+                  className={`theme-switch-btn${preference === opt.value ? " active" : ""}`}
+                  onClick={() => setTheme?.(opt.value)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">{opt.icon}</svg>
+                </button>
+              ))}
+            </div>
             <button type="button" className="bell-btn" title="Notificaciones">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M18 9a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"></path><path d="M10.5 20a2 2 0 0 0 3 0"></path></svg>
             </button>

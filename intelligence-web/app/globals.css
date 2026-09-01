@@ -36,6 +36,41 @@
   --radius:      14px;
   --radius-sm:   9px;
   --radius-pill: 999px;
+
+  /* Resplandor detrás de la tarjeta de login (.auth-wrap) — el único lugar
+     con un color "de ambiente" que no viene de un token de arriba. */
+  --auth-glow: #16121c;
+
+  /* Componentes RGB de --bg, para el header-bar translúcido (rgba con
+     blur) — CSS no puede derivar rgba() a partir de un hex en var(). */
+  --bg-rgb: 15, 15, 14;
+}
+
+/* Tema claro: fondo blanco. El acento naranja y los colores de marca
+   (purple, gradient) se quedan igual en los dos temas — success/error/red
+   sí cambian, porque su tono para texto sobre negro (#4ade80, #f87171)
+   queda lavado y con poco contraste sobre blanco. */
+[data-theme="light"] {
+  --bg:        #FFFFFF;
+  --surface:   #F7F7F4;
+  --surface2:  #EFEFEA;
+  --surface3:  #FBFBF9;
+  --border:    #E7E7E1;
+  --border2:   #D9D9D1;
+  --border3:   #C7C7BC;
+  --text:      #1B1B17;
+  --muted:     #6B6B60;
+  --muted2:    #9C9C90;
+
+  --red:       #D91F1F;
+  --success:   #16A34A;
+  --error:     #DC2626;
+
+  --accent-bg:     #FFF1ED;
+  --accent-border: #FFD9CB;
+
+  --auth-glow: #FFE4DA;
+  --bg-rgb: 255, 255, 255;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -105,7 +140,11 @@ h1, h2, h3 { font-family: var(--font-unbounded), sans-serif; font-weight: 600; l
 .input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255,68,34,.10); }
 .input::placeholder { color: var(--muted2); }
 .input.mono { font-family: ui-monospace, Menlo, monospace; }
-input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); cursor: pointer; }
+input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
+/* El ícono nativo del navegador ya es oscuro por defecto — se ve bien tal
+   cual sobre el fondo claro de los inputs en tema claro. En tema oscuro
+   hay que invertirlo para que no se pierda contra --surface2. */
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); }
 
 /* ── Cards ── */
 .card {
@@ -252,7 +291,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 /* ── Login ── */
 .auth-wrap {
   min-height: 100vh; display: grid; place-items: center; padding: 20px;
-  background: radial-gradient(120% 120% at 50% 0%, #16121c 0%, var(--bg) 60%);
+  background: radial-gradient(120% 120% at 50% 0%, var(--auth-glow) 0%, var(--bg) 60%);
 }
 .auth-card { width: 100%; max-width: 360px; }
 .auth-brand {
@@ -350,13 +389,26 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
 /* ── Header superior ── */
 .header-bar {
   position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 14px;
-  padding: 14px 30px; background: rgba(15,15,14,.86); backdrop-filter: blur(12px);
+  padding: 14px 30px; background: rgba(var(--bg-rgb), .86); backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
 }
 .header-crumb { font-family: var(--font-unbounded), sans-serif; font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted2); }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .bell-btn { width: 32px; height: 32px; border: 1px solid var(--border2); border-radius: 9px; background: var(--surface); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
 .bell-btn:hover { border-color: var(--border3); }
+
+/* ── Selector de tema (claro / oscuro / sistema) ── */
+.theme-switch {
+  display: flex; align-items: center; gap: 2px; padding: 2px;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 9px;
+}
+.theme-switch-btn {
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 7px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all .15s;
+}
+.theme-switch-btn:hover { color: var(--text); }
+.theme-switch-btn.active { background: var(--surface2); color: var(--accent); }
 /* ── Leads: métricas ── */
 .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .metric-card {
