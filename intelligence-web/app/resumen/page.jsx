@@ -11,6 +11,31 @@ import { objectiveLabel, statusLabel } from "@/lib/objectives";
 
 const BUDGET_KEY = "vv_resumen_budget";
 const CURRENCY_KEY = "vv_resumen_currency";
+const SUMMARY_CACHE_PREFIX = "vv_resumen_cache_";
+
+// Último resumen que sí llegó a cargar, por activo comercial — sobrevive a
+// un F5 o a volver a entrar a la pestaña. Sin esto, cada carga de página
+// arrancaba desde cero (summary=null) y mostraba el loader a pantalla
+// completa aunque un segundo antes ya se hubiera visto el mismo resumen;
+// con la caché, esa pantalla de "Cargando…" solo aparece la primera vez
+// que se consulta un activo comercial en este navegador.
+function loadCachedSummary(accountId) {
+  try {
+    const raw = localStorage.getItem(SUMMARY_CACHE_PREFIX + accountId);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedSummary(accountId, data) {
+  try {
+    localStorage.setItem(SUMMARY_CACHE_PREFIX + accountId, JSON.stringify(data));
+  } catch {
+    // localStorage lleno o inaccesible (modo privado, etc.) — no es
+    // crítico, el resumen simplemente no sobrevive un refresh en ese caso.
+  }
+}
 
 function money(n, symbol) {
   const v = Number(n) || 0;
@@ -69,19 +94,22 @@ export default function ResumenPage() {
   // esta pantalla no tiene selector de activo (a diferencia de Reportes).
   const accountId = client?.ad_accounts?.[0]?.id ?? null;
 
-  // Solo se limpia `summary` a null cuando cambia el ACTIVO comercial (para
-  // no mostrar por un instante el resumen del cliente anterior mientras
-  // carga el nuevo). Un cambio de fecha/moneda/presupuesto sobre el MISMO
-  // activo deja el resumen anterior en pantalla mientras llega el nuevo —
-  // antes se borraba todo de inmediato y la pantalla completa se
-  // reemplazaba por "Cargando…" en cada ajuste, como si la página entera
-  // se hubiera recargado.
+  // `summary` solo se reemplaza por el de la CACHÉ (nunca por null) cuando
+  // cambia el activo comercial — así, si ya se consultó antes en este
+  // navegador, se ve de inmediato en vez de la pantalla de "Cargando…".
+  // Un cambio de fecha/moneda/presupuesto sobre el MISMO activo deja el
+  // resumen anterior en pantalla mientras llega el nuevo — antes se
+  // borraba todo de inmediato y la pantalla completa se reemplazaba por
+  // "Cargando…" en cada ajuste, como si la página entera se hubiera
+  // recargado.
   const prevAccountId = useRef(null);
   useEffect(() => {
     if (!client || !dateFrom || !dateTo || !accountId) { setSummary(null); return; }
     let cancelled = false;
-    if (prevAccountId.current !== accountId) setSummary(null);
-    prevAccountId.current = accountId;
+    if (prevAccountId.current !== accountId) {
+      prevAccountId.current = accountId;
+      setSummary(loadCachedSummary(accountId));
+    }
     setBusy(true); setErr("");
     api.reportSummary({
       ad_account_id: accountId,
@@ -89,7 +117,11 @@ export default function ResumenPage() {
       date_to: dateTo,
       budget: budget ? Number(budget) : null,
       currency,
-    }).then((data) => { if (!cancelled) setSummary(data); })
+    }).then((data) => {
+      if (cancelled) return;
+      setSummary(data);
+      saveCachedSummary(accountId, data);
+    })
       .catch((e) => { if (!cancelled) setErr(e.message); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
