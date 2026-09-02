@@ -53,6 +53,7 @@ export default function ReportesPage() {
   const [countryCode, setCountryCode] = useState("");
   const [countries, setCountries] = useState([]);
   const [loadingCountries, setLoadingCountries] = useState(false);
+  const [countriesError, setCountriesError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const [showCustomize, setShowCustomize] = useState(false);
@@ -92,14 +93,25 @@ export default function ReportesPage() {
     setAccountId(id);
     setCountryCode("");
     setCountries([]);
+    setCountriesError("");
     if (!id) return;
+    await cargarPaises(id);
+  }
 
+  // Separado de cambiarActivo para que el botón "Reintentar" pueda volver
+  // a llamarlo sin resetear el activo ya seleccionado. Antes, un fallo acá
+  // (típicamente Meta: "User request limit reached") se tragaba en
+  // silencio — countries quedaba en [] sin ningún aviso, así que el
+  // selector se veía "atascado" en "Todos los países" sin explicar por
+  // qué nunca aparecían las demás opciones.
+  async function cargarPaises(id) {
     setLoadingCountries(true);
+    setCountriesError("");
     try {
       const response = await request(`/reports/countries/${id}`);
       setCountries(response.countries || []);
     } catch (e) {
-      console.error("Error loading countries:", e);
+      setCountriesError(e.message);
       setCountries([]);
     } finally {
       setLoadingCountries(false);
@@ -323,6 +335,19 @@ export default function ReportesPage() {
                   </option>
                 ))}
               </select>
+              {countriesError && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                  <span style={{ fontSize: 11, color: "var(--error)" }}>
+                    No se pudieron cargar los países: {countriesError}
+                  </span>
+                  <button
+                    type="button" className="btn btn-ghost" style={{ padding: "3px 10px", fontSize: 11 }}
+                    onClick={() => cargarPaises(accountId)}
+                  >
+                    Reintentar
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
