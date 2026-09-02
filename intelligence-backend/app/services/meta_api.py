@@ -480,6 +480,36 @@ async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id:
     raise last_error
 
 
+async def _fetch_top_ad_creatives(token: str, ad_ids: list[str]) -> dict[str, str | None]:
+    """
+    Trae la imagen (thumbnail/creative) SOLO de los anuncios pedidos —
+    típicamente el mejor anuncio de cada campaña, que es el único que el
+    PDF llega a dibujar (ver pdf_generator.render_campaign_card, que solo
+    usa ads[0]).
+
+    Antes, el listado de anuncios de get_account_data pedía
+    creative{thumbnail_url,image_url} para TODOS los anuncios de la
+    cuenta, sin importar cuántos fueran a mostrarse. En una cuenta con
+    muchos anuncios eso inflaba esa consulta (que corre en paralelo a los
+    dos jobs de insights, así que su duración también cuenta) por datos
+    que se descartaban. Este segundo llamado es UNO SOLO — el endpoint
+    "?ids=..." de Meta permite pedir varios objetos a la vez — y su costo
+    escala con el número de CAMPAÑAS, no de anuncios.
+    """
+    if not ad_ids:
+        return {}
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        data = await _get(client, "", token, {
+            "ids": ",".join(ad_ids),
+            "fields": "creative{thumbnail_url,image_url}",
+        })
+    result: dict[str, str | None] = {}
+    for ad_id, obj in data.items():
+        creative = (obj or {}).get("creative") or {}
+        result[ad_id] = creative.get("thumbnail_url") or creative.get("image_url")
+    return result
+
+
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
                            attribution_windows: list[str] | None = None,
                            include_inactive: bool = False,
@@ -490,12 +520,13 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
 
     Los insights (campaña y anuncio) se piden vía job asíncrono de Meta —ver
     _run_insights_job—, uno para toda la cuenta por nivel, sin importar
-    cuántas campañas o anuncios tenga. El listado de anuncios (nombre +
-    creativo, sin insights) SÍ se pide de forma síncrona en bloque porque es
-    liviano (no agrega datos sobre un rango de fechas, es solo un listado) y
-    NO se filtra por effective_status: Meta tiene más estados posibles que
-    "ACTIVE"/"PAUSED" (ej. ADSET_PAUSED, CAMPAIGN_PAUSED) y filtrar por esos
-    dos nada más escondía anuncios legítimos que sí deberían aparecer.
+    cuántas campañas o anuncios tenga. El listado de anuncios (nombre y
+    targeting, SIN imagen ni insights) SÍ se pide de forma síncrona en
+    bloque porque es liviano y NO se filtra por effective_status: Meta
+    tiene más estados posibles que "ACTIVE"/"PAUSED" (ej. ADSET_PAUSED,
+    CAMPAIGN_PAUSED) y filtrar por esos dos nada más escondía anuncios
+    legítimos que sí deberían aparecer. La imagen se trae aparte, al final,
+    solo para el mejor anuncio de cada campaña — ver _fetch_top_ad_creatives.
 
     `include_inactive=True` conserva las campañas ACTIVA/PAUSADA sin
     insights en el período (spend=0, insights={}) en vez de descartarlas —
@@ -531,7 +562,7 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             ))),
             perf.timed("Meta · listado de anuncios", _labeled("Listado de anuncios", _get_all(
                 client, f"{ad_account_id}/ads", token, {
-                    "fields": "id,name,campaign_id,creative{thumbnail_url,image_url},targeting",
+                    "fields": "id,name,campaign_id,targeting",
                     "limit": _PAGE_SIZE,
                 },
             ))),
@@ -571,11 +602,10 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             insights = {}
         campaign_ads = []
         for ad in ads_by_campaign.get(c["id"], []):
-            creative = ad.get("creative") or {}
             campaign_ads.append({
                 "id": ad["id"],
                 "name": ad.get("name"),
-                "image_url": creative.get("thumbnail_url") or creative.get("image_url"),
+                "image_url": None,  # se completa más abajo, solo para el mejor anuncio de cada campaña
                 "insights": insights_by_ad.get(ad["id"], {}),
                 "countries": _extract_countries_from_targeting(ad.get("targeting")),
             })
@@ -591,6 +621,19 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
             "ads": campaign_ads,
             "spend": spend,
         })
+
+    if include_ad_insights:
+        # Solo tiene sentido pedir imágenes cuando el llamador va a
+        # dibujarlas (el PDF real) — /reports/campaigns y /reports/countries
+        # ya piden include_ad_insights=False y nunca las usan.
+        top_ad_ids = [c["ads"][0]["id"] for c in campaign_data if c["ads"]]
+        creatives = await perf.timed(
+            "Meta · imágenes del mejor anuncio por campaña",
+            _labeled("Imágenes del mejor anuncio por campaña", _fetch_top_ad_creatives(token, top_ad_ids)),
+        )
+        for c in campaign_data:
+            if c["ads"]:
+                c["ads"][0]["image_url"] = creatives.get(c["ads"][0]["id"])
 
     total_spend = sum(c["spend"] for c in campaign_data)
     return {"campaigns": campaign_data, "total_spend": total_spend}

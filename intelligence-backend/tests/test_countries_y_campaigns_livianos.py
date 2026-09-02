@@ -71,14 +71,67 @@ def test_get_account_data_include_ad_insights_true_sigue_igual_por_defecto(monke
             return [{"id": "a1", "name": "Anuncio", "campaign_id": "1", "targeting": {}}]
         return []
 
+    async def fake_get(client, path, token, params):
+        return {"a1": {"creative": {"thumbnail_url": "https://x/a1.jpg"}}}
+
     monkeypatch.setattr(meta_api, "get_campaigns", fake_get_campaigns)
     monkeypatch.setattr(meta_api, "_run_insights_job", fake_run_insights_job)
     monkeypatch.setattr(meta_api, "_get_all", fake_get_all)
+    monkeypatch.setattr(meta_api, "_get", fake_get)
 
     data = asyncio.run(meta_api.get_account_data("token", "act_1", "2026-01-01", "2026-01-15"))
 
     assert sorted(levels_pedidos) == ["ad", "campaign"]
     assert data["campaigns"][0]["ads"][0]["insights"] == {"ad_id": "a1", "spend": 5.0}
+    assert data["campaigns"][0]["ads"][0]["image_url"] == "https://x/a1.jpg"
+
+
+def test_get_account_data_pide_imagen_solo_del_mejor_anuncio_por_campana(monkeypatch):
+    """La optimización real para cuentas con muchos anuncios: el listado
+    masivo de anuncios ya NO pide creative{} (ver el fields de la llamada
+    a /ads en get_account_data); la imagen se trae aparte, en un único
+    llamado ?ids=..., y solo para el anuncio con mejor ranking de cada
+    campaña — nunca para los demás."""
+    ids_de_imagen_pedidos = []
+
+    async def fake_get_campaigns(client, token, ad_account_id):
+        return _fake_campaigns()
+
+    async def fake_run_insights_job(client, ad_account_id, token, level, fields, time_range,
+                                    attribution_windows=None):
+        if level == "campaign":
+            return [{"campaign_id": "1", "spend": 10.0}]
+        # "bueno" tiene más clics -> debe ganar el ranking sobre "malo"
+        return [
+            {"ad_id": "bueno", "spend": 8.0, "clicks": 50},
+            {"ad_id": "malo", "spend": 2.0, "clicks": 1},
+        ]
+
+    async def fake_get_all(client, path, token, params):
+        if path.endswith("/ads"):
+            assert "creative" not in params.get("fields", "")
+            return [
+                {"id": "malo", "name": "Malo", "campaign_id": "1", "targeting": {}},
+                {"id": "bueno", "name": "Bueno", "campaign_id": "1", "targeting": {}},
+            ]
+        return []
+
+    async def fake_get(client, path, token, params):
+        ids_de_imagen_pedidos.extend(params["ids"].split(","))
+        return {"bueno": {"creative": {"thumbnail_url": "https://x/bueno.jpg"}}}
+
+    monkeypatch.setattr(meta_api, "get_campaigns", fake_get_campaigns)
+    monkeypatch.setattr(meta_api, "_run_insights_job", fake_run_insights_job)
+    monkeypatch.setattr(meta_api, "_get_all", fake_get_all)
+    monkeypatch.setattr(meta_api, "_get", fake_get)
+
+    data = asyncio.run(meta_api.get_account_data("token", "act_1", "2026-01-01", "2026-01-15"))
+
+    ads = data["campaigns"][0]["ads"]
+    assert ads[0]["id"] == "bueno"
+    assert ads[0]["image_url"] == "https://x/bueno.jpg"
+    assert ads[1]["image_url"] is None
+    assert ids_de_imagen_pedidos == ["bueno"]
 
 
 def test_get_account_data_with_fallback_reenvia_include_ad_insights(monkeypatch):
@@ -96,6 +149,34 @@ def test_get_account_data_with_fallback_reenvia_include_ad_insights(monkeypatch)
         ["token"], "act_1", "2026-01-01", "2026-01-15", include_ad_insights=False,
     ))
     assert captured["include_ad_insights"] is False
+
+
+# ── _fetch_top_ad_creatives ─────────────────────────────────────────────
+def test_fetch_top_ad_creatives_lista_vacia_no_llama_a_meta(monkeypatch):
+    async def fake_get(client, path, token, params):
+        raise AssertionError("no debería llamar a Meta con una lista vacía")
+
+    monkeypatch.setattr(meta_api, "_get", fake_get)
+    result = asyncio.run(meta_api._fetch_top_ad_creatives("token", []))
+    assert result == {}
+
+
+def test_fetch_top_ad_creatives_manda_los_ids_juntos_en_un_solo_llamado(monkeypatch):
+    captured = {}
+
+    async def fake_get(client, path, token, params):
+        captured.update(params)
+        return {
+            "a1": {"creative": {"thumbnail_url": "https://x/a1.jpg"}},
+            "a2": {"creative": {"image_url": "https://x/a2.jpg"}},  # sin thumbnail, cae a image_url
+        }
+
+    monkeypatch.setattr(meta_api, "_get", fake_get)
+    result = asyncio.run(meta_api._fetch_top_ad_creatives("token", ["a1", "a2"]))
+
+    assert captured["ids"] == "a1,a2"
+    assert "thumbnail_url,image_url" in captured["fields"]
+    assert result == {"a1": "https://x/a1.jpg", "a2": "https://x/a2.jpg"}
 
 
 # ── Las rutas piden la versión liviana ──────────────────────────────────
