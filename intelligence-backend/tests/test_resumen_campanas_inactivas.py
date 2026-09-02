@@ -70,7 +70,7 @@ def test_build_report_data_reenvia_include_inactive(monkeypatch, tenant_a, facto
     captured = {}
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         captured["include_inactive"] = include_inactive
         return {"campaigns": [], "total_spend": 0.0}
 

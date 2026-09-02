@@ -339,6 +339,12 @@ async def get_available_countries(
     Devuelve la lista de países únicos en los que se han pautado anuncios
     para una cuenta publicitaria. Útil para mostrar un selector en el frontend.
     Usa el último mes como rango de fechas por defecto.
+
+    Solo necesita el targeting de los anuncios, nunca su performance — pide
+    include_ad_insights=False (se salta el job asíncrono de insights por
+    anuncio, el más lento de los dos que usa un reporte completo) e
+    include_inactive=True (para que una campaña activa/pausada sin gasto
+    en los últimos 30 días no le esconda sus países al selector).
     """
     from datetime import date, timedelta
 
@@ -359,7 +365,7 @@ async def get_available_countries(
         data = await meta_api.get_account_data_with_fallback(
             tokens, account.meta_ad_account_id,
             thirty_days_ago.isoformat(), today.isoformat(),
-            attribution_windows,
+            attribution_windows, include_inactive=True, include_ad_insights=False,
         )
     except meta_api.MetaApiError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")
@@ -387,12 +393,12 @@ async def get_report_campaigns(
     pdf_generator.METRIC_REGISTRY). Alimenta el panel "Personalizar métricas y
     observaciones" del formulario de Reportes.
 
-    La respuesta es liviana (sin anuncios ni imágenes), pero el costo real
-    contra Meta NO lo es: internamente llama a
-    meta_api.get_account_data_with_fallback, el mismo fetch completo
-    (dos jobs async de insights + el listado paginado completo de anuncios)
-    que usa la generación del reporte final. No es una operación barata para
-    llamar repetidamente.
+    La respuesta es liviana (sin anuncios ni imágenes) y ya NO paga el costo
+    completo de un reporte: pide include_ad_insights=False, así que se salta
+    el job asíncrono de insights por anuncio (el más lento de los dos, y
+    este panel nunca muestra performance por anuncio). Sigue corriendo el
+    job de insights POR CAMPAÑA, porque sin eso no se sabría cuáles
+    campañas tendrán datos reales en el reporte final de ESTE período.
     """
     account = _get_owned_account(account_id, current, db)
 
@@ -413,7 +419,7 @@ async def get_report_campaigns(
         data = await meta_api.get_account_data_with_fallback(
             tokens, account.meta_ad_account_id,
             date_from.isoformat(), date_to.isoformat(),
-            attribution_windows,
+            attribution_windows, include_ad_insights=False,
         )
     except meta_api.MetaApiError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")

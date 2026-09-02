@@ -84,7 +84,7 @@ def test_build_report_data_traduce_la_preferencia_guardada(monkeypatch, tenant_a
     captured = {}
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         captured["attribution_windows"] = attribution_windows
         return {"campaigns": [], "total_spend": 0.0}
 
@@ -107,7 +107,7 @@ def test_build_report_data_sin_preferencia_no_manda_nada(monkeypatch, tenant_a, 
     captured = {}
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         captured["attribution_windows"] = attribution_windows
         return {"campaigns": [], "total_spend": 0.0}
 

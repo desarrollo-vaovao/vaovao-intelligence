@@ -345,7 +345,8 @@ def _extract_countries_from_targeting(targeting: dict | None) -> list[str]:
 async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
                                          date_from: str, date_to: str,
                                          attribution_windows: list[str] | None = None,
-                                         include_inactive: bool = False) -> dict:
+                                         include_inactive: bool = False,
+                                         include_ad_insights: bool = True) -> dict:
     """
     Igual que get_account_data, pero prueba varios tokens en orden (p. ej. el
     Facebook personal del usuario y, si a ESA cuenta le falta acceso, el token
@@ -357,7 +358,8 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
     for token in tokens:
         try:
             return await get_account_data(token, ad_account_id, date_from, date_to,
-                                          attribution_windows, include_inactive)
+                                          attribution_windows, include_inactive,
+                                          include_ad_insights)
         except MetaApiError as e:
             last_error = e
     assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
@@ -480,7 +482,8 @@ async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id:
 
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
                            attribution_windows: list[str] | None = None,
-                           include_inactive: bool = False) -> dict:
+                           include_inactive: bool = False,
+                           include_ad_insights: bool = True) -> dict:
     """
     Director de orquesta: trae TODO para una cuenta publicitaria.
     Devuelve {"campaigns": [...], "total_spend": float}.
@@ -501,6 +504,14 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
     rango de fechas elegido no tenga gasto todavía. El PDF (build_pdf) se
     queda con el default False: ahí sí importa no inflar un reporte con
     años de campañas viejas sin actividad (ver comentario más abajo).
+    `include_ad_insights=False` se salta el job asincrono de insights POR
+    ANUNCIO (el mas caro de los dos: una fila por anuncio en vez de por
+    campana) -- cada ad["insights"] queda en {}. Lo usan endpoints que solo
+    necesitan metadata de campana/anuncio (nombre, objetivo, paises de
+    targeting) pero nunca performance por anuncio: /reports/campaigns
+    (panel de personalizar metricas) y /reports/countries. Antes ambos
+    pagaban el costo COMPLETO de un reporte -incluido este job que ni
+    usaban- solo para leer un listado.
     """
     time_range = json.dumps({"since": date_from, "until": date_to})
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -513,13 +524,9 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
 
         api_fields = _fields_for_campaigns(campaigns)
 
-        campaign_insights, ad_insights, ads = await asyncio.gather(
+        tasks = [
             perf.timed("Meta · insights de campañas", _labeled("Insights de campañas", _run_insights_job(
                 client, ad_account_id, token, "campaign", ["campaign_id"] + api_fields, time_range,
-                attribution_windows,
-            ))),
-            perf.timed("Meta · insights de anuncios", _labeled("Insights de anuncios", _run_insights_job(
-                client, ad_account_id, token, "ad", ["ad_id"] + api_fields, time_range,
                 attribution_windows,
             ))),
             perf.timed("Meta · listado de anuncios", _labeled("Listado de anuncios", _get_all(
@@ -528,7 +535,17 @@ async def get_account_data(token: str, ad_account_id: str, date_from: str, date_
                     "limit": _PAGE_SIZE,
                 },
             ))),
-        )
+        ]
+        if include_ad_insights:
+            tasks.append(
+                perf.timed("Meta · insights de anuncios", _labeled("Insights de anuncios", _run_insights_job(
+                    client, ad_account_id, token, "ad", ["ad_id"] + api_fields, time_range,
+                    attribution_windows,
+                )))
+            )
+        results = await asyncio.gather(*tasks)
+        campaign_insights, ads = results[0], results[1]
+        ad_insights = results[2] if include_ad_insights else []
 
         insights_by_campaign = {i["campaign_id"]: _with_derived_metrics(i)
                                 for i in campaign_insights if i.get("campaign_id")}

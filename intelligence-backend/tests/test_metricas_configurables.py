@@ -196,7 +196,7 @@ def test_build_report_data_sin_personalizacion_no_agrega_claves(monkeypatch, ten
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
@@ -213,7 +213,7 @@ def test_build_report_data_con_personalizacion_adjunta_por_campana(monkeypatch, 
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [_fake_campaign("1"), _fake_campaign("2")], "total_spend": 20.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
@@ -244,7 +244,7 @@ def test_get_campaigns_devuelve_nombre_objetivo_y_default_metrics(client, login,
     monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [_fake_campaign("111", "MESSAGES")], "total_spend": 10.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
@@ -287,7 +287,7 @@ def test_get_campaigns_respeta_filtro_de_pais(client, login, tenant_a, factory, 
     sin_pais_pedido["ads"] = [{"id": "ad2", "name": "Anuncio", "insights": {}, "countries": ["US"]}]
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [con_pais, sin_pais_pedido], "total_spend": 20.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
@@ -305,7 +305,7 @@ def test_summary_reenvia_campaign_metrics_y_comentarios(client, login, tenant_a,
     monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [_fake_campaign("1"), _fake_campaign("2")], "total_spend": 20.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
@@ -348,7 +348,7 @@ def test_build_report_data_clave_sin_match_no_agrega_campana_fantasma(monkeypatc
     account = factory.ad_account(tenant_a.client)
 
     async def fake_get_account_data_with_fallback(tokens, ad_account_id, date_from, date_to,
-                                                   attribution_windows=None, include_inactive=False):
+                                                   attribution_windows=None, include_inactive=False, include_ad_insights=True):
         return {"campaigns": [_fake_campaign("1")], "total_spend": 10.0}
 
     monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
