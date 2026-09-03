@@ -13,9 +13,9 @@ Todo cuelga de Organization → así el aislamiento por tenant es natural:
 cada query filtra por org_id y nadie ve datos de otra organización.
 """
 import enum
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float
+from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float, Date, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -157,6 +157,34 @@ class AdAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     client: Mapped["Client"] = relationship(back_populates="ad_accounts")
+
+
+class ReportCampaignsCache(Base):
+    """
+    Caché de GET /reports/campaigns por (cuenta, rango de fechas, país):
+    ese endpoint pide a Meta cuáles campañas tuvieron datos reales en un
+    período exacto, y ese resultado no cambia una vez que el período ya
+    pasó (Meta no reescribe el historial) — así que una fila para un
+    period cerrado (date_to en el pasado) se sirve para siempre sin volver
+    a llamar a Meta. Un período que todavía incluye el día de hoy sigue
+    acumulando gasto, así que esa fila solo se sirve por
+    _CAMPAIGNS_CACHE_TTL (ver reports.py) antes de refrescarse — así una
+    campaña nueva creada hoy aparece sin esperar a que "cierre" el período.
+    """
+    __tablename__ = "report_campaigns_cache"
+    __table_args__ = (
+        UniqueConstraint("account_id", "date_from", "date_to", "country_code", name="uq_campaigns_cache_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("ad_accounts.id", ondelete="CASCADE"), index=True)
+    date_from: Mapped[date] = mapped_column(Date)
+    date_to: Mapped[date] = mapped_column(Date)
+    # "" cuando el reporte no filtra por país (en vez de NULL, para que la
+    # UniqueConstraint funcione igual — NULL no es comparable a sí mismo).
+    country_code: Mapped[str] = mapped_column(String(2), default="")
+    campaigns: Mapped[list] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class ClientPage(Base):

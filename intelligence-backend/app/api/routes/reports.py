@@ -31,7 +31,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models import User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken
+from app.models import (
+    User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken,
+    ReportCampaignsCache,
+)
 from app.schemas import (
     ReportStatus,
     ReportRequest,
@@ -55,6 +58,13 @@ GENERATION_AVAILABLE = True
 # frecuencia comparado con el gasto — no hace falta ir a Meta cada vez
 # que alguien abre el selector de país en Reportes.
 _COUNTRIES_CACHE_TTL = timedelta(hours=int(os.getenv("REPORT_COUNTRIES_CACHE_HOURS", "24")))
+
+# Cada cuánto se vuelve a pedir a Meta la lista de campañas con datos en un
+# período que TODAVÍA incluye hoy (ver GET /reports/campaigns y
+# ReportCampaignsCache, migración 0007). Un período ya cerrado (date_to en
+# el pasado) no necesita TTL: Meta no reescribe el historial, así que esa
+# fila se sirve para siempre.
+_CAMPAIGNS_CACHE_TTL = timedelta(hours=float(os.getenv("REPORT_CAMPAIGNS_CACHE_HOURS", "1")))
 
 # ── Jobs de generación en segundo plano ─────────────────────────
 # En memoria del proceso: alcanza para el tamaño de este equipo (un solo
@@ -451,12 +461,19 @@ async def get_report_campaigns(
     pdf_generator.METRIC_REGISTRY). Alimenta el panel "Personalizar métricas y
     observaciones" del formulario de Reportes.
 
-    La respuesta es liviana (sin anuncios ni imágenes) y ya NO paga el costo
-    completo de un reporte: pide include_ad_insights=False, así que se salta
-    el job asíncrono de insights por anuncio (el más lento de los dos, y
-    este panel nunca muestra performance por anuncio). Sigue corriendo el
-    job de insights POR CAMPAÑA, porque sin eso no se sabría cuáles
-    campañas tendrán datos reales en el reporte final de ESTE período.
+    Se guarda en report_campaigns_cache (migración 0007) por combinación
+    exacta de (cuenta, date_from, date_to, país): un período ya cerrado no
+    vuelve a pedirse nunca (Meta no reescribe el historial), y uno que
+    todavía incluye hoy se refresca cada _CAMPAIGNS_CACHE_TTL para que una
+    campaña nueva no tarde en aparecer.
+
+    Cuando SÍ hace falta ir a Meta: la respuesta es liviana (sin anuncios ni
+    imágenes) y ya NO paga el costo completo de un reporte — pide
+    include_ad_insights=False, así que se salta el job asíncrono de
+    insights por anuncio (el más lento de los dos, y este panel nunca
+    muestra performance por anuncio). Sigue corriendo el job de insights
+    POR CAMPAÑA, porque sin eso no se sabría cuáles campañas tendrán datos
+    reales en el reporte final de ESTE período.
     """
     account = _get_owned_account(account_id, current, db)
 
@@ -466,8 +483,28 @@ async def get_report_campaigns(
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
 
+    country_key = country_code or ""
+    cached = db.execute(
+        select(ReportCampaignsCache).where(
+            ReportCampaignsCache.account_id == account_id,
+            ReportCampaignsCache.date_from == date_from,
+            ReportCampaignsCache.date_to == date_to,
+            ReportCampaignsCache.country_code == country_key,
+        )
+    ).scalar_one_or_none()
+
+    period_closed = date_to < date.today()
+    if cached is not None:
+        updated_at = cached.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if period_closed or datetime.now(timezone.utc) - updated_at < _CAMPAIGNS_CACHE_TTL:
+            return {"campaigns": cached.campaigns}
+
     tokens, error = resolve_tokens(current, db)
     if not tokens:
+        if cached is not None:
+            return {"campaigns": cached.campaigns}
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
     org = db.get(Organization, current.org_id)
@@ -483,18 +520,37 @@ async def get_report_campaigns(
             attribution_windows, include_ad_insights=False,
         )
     except meta_api.MetaApiError as e:
+        if cached is not None:
+            return {"campaigns": cached.campaigns}
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")
 
-    campaigns, _ = report_builder._filter_campaigns_by_country(data["campaigns"], country_code)
+    campaigns_data, _ = report_builder._filter_campaigns_by_country(data["campaigns"], country_code)
 
-    return {
-        "campaigns": [
-            {
-                "id": str(c["id"]),
-                "name": c.get("name") or "",
-                "objective": c.get("objective") or "DEFAULT",
-                "default_metrics": pdf_generator.default_metric_keys(c.get("objective")),
-            }
-            for c in campaigns
-        ]
-    }
+    result = [
+        {
+            "id": str(c["id"]),
+            "name": c.get("name") or "",
+            "objective": c.get("objective") or "DEFAULT",
+            "default_metrics": pdf_generator.default_metric_keys(c.get("objective")),
+        }
+        for c in campaigns_data
+    ]
+
+    row = db.execute(
+        select(ReportCampaignsCache).where(
+            ReportCampaignsCache.account_id == account_id,
+            ReportCampaignsCache.date_from == date_from,
+            ReportCampaignsCache.date_to == date_to,
+            ReportCampaignsCache.country_code == country_key,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = ReportCampaignsCache(
+            account_id=account_id, date_from=date_from, date_to=date_to, country_code=country_key,
+        )
+        db.add(row)
+    row.campaigns = result
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"campaigns": result}
