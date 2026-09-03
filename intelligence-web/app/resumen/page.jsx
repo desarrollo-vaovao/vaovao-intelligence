@@ -5,7 +5,7 @@ import Shell from "@/lib/Shell";
 import { useAuth } from "@/lib/auth";
 import { useClient } from "@/lib/clients";
 import { api } from "@/lib/api";
-import DateRangePicker, { periodoQuincenal } from "@/lib/DateRangePicker";
+import { periodoMensual, formatoCorto } from "@/lib/DateRangePicker";
 import { useExchangeRate, exchangeFactor } from "@/lib/useExchangeRate";
 import { objectiveLabel, statusLabel } from "@/lib/objectives";
 
@@ -57,8 +57,14 @@ export default function ResumenPage() {
   const { user } = useAuth() || {};
   const exchangeRate = useExchangeRate();
 
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Resumen ahora es siempre por MES — un solo número al mes es más fácil
+  // de seguir que rangos sueltos, y de paso el backend deja de recibir un
+  // rango de fechas distinto cada vez que alguien lo movía un día (ver
+  // report_summary_cache / CampaignDailyMetric): 0 = mes actual, -1 = el
+  // anterior, etc.
+  const [monthOffset, setMonthOffset] = useState(0);
+  const { from: dateFrom, to: dateTo } = periodoMensual(monthOffset);
+
   const [budget, setBudget] = useState("");
   const [currency, setCurrency] = useState("USD");
 
@@ -67,8 +73,6 @@ export default function ResumenPage() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    const q = periodoQuincenal(0);
-    setDateFrom(q.from); setDateTo(q.to);
     setBudget(localStorage.getItem(BUDGET_KEY) || "");
     setCurrency(localStorage.getItem(CURRENCY_KEY) || "USD");
   }, []);
@@ -216,7 +220,23 @@ export default function ResumenPage() {
       </div>
 
       <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
-        <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
+        <div className="row" style={{ gap: 2 }}>
+          <button
+            type="button" className="btn" aria-label="Mes anterior"
+            onClick={() => setMonthOffset((o) => o - 1)}
+          >
+            ‹
+          </button>
+          <span className="input mono" style={{ minWidth: 150, textAlign: "center" }}>
+            {formatoCorto(dateFrom, dateTo)}
+          </span>
+          <button
+            type="button" className="btn" aria-label="Mes siguiente" disabled={monthOffset >= 0}
+            onClick={() => setMonthOffset((o) => Math.min(0, o + 1))}
+          >
+            ›
+          </button>
+        </div>
         <div style={{ position: "relative", maxWidth: 160 }}>
           <span style={{
             position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)",

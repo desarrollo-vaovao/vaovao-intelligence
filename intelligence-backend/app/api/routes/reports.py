@@ -27,17 +27,15 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db, SessionLocal
 from app.models import (
     User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken,
-    ReportCampaignsCache, ReportSummaryCache,
+    ReportCampaignsCache, ReportSummaryCache, SyncedCampaign, CampaignDailyMetric,
 )
-
-log = logging.getLogger(__name__)
 from app.schemas import (
     ReportStatus,
     ReportRequest,
@@ -49,6 +47,8 @@ from app.schemas import (
 )
 from app.services import meta_api, pdf_generator, report_builder
 from app.services.meta_tokens import resolve_tokens
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -390,6 +390,92 @@ async def _refresh_summary_cache_background(
         _summary_refresh_in_flight.discard(key)
 
 
+def _summary_from_local_data(db: Session, account: AdAccount, org: Organization | None,
+                             date_from: date, date_to: date, currency: str) -> dict:
+    """
+    Arma la misma respuesta que report_builder.build_report_data, pero SIN
+    tocar Meta: suma CampaignDailyMetric en [date_from, date_to] sobre el
+    catálogo de SyncedCampaign de la cuenta (ver app/services/daily_sync.py,
+    migración 0009). Las fechas son solo un filtro SQL — cualquier rango
+    que alguien pida ya está resuelto localmente.
+
+    Solo se puede usar cuando `account.daily_metrics_synced_until` no es
+    None (ya se sincronizó al menos una vez); el llamador es responsable de
+    verificarlo.
+
+    NO soporta country_code (SyncedCampaign/CampaignDailyMetric no guardan
+    targeting por anuncio, solo por campaña) ni platform_breakdown — Resumen
+    nunca los usó, así que quedan vacíos/None igual que antes cuando no
+    aplicaban.
+    """
+    rows = db.execute(
+        select(
+            CampaignDailyMetric.campaign_id,
+            func.sum(CampaignDailyMetric.spend),
+            func.sum(CampaignDailyMetric.impressions),
+            func.sum(CampaignDailyMetric.reach),
+            func.sum(CampaignDailyMetric.clicks),
+        )
+        .where(
+            CampaignDailyMetric.account_id == account.id,
+            CampaignDailyMetric.date >= date_from,
+            CampaignDailyMetric.date <= date_to,
+        )
+        .group_by(CampaignDailyMetric.campaign_id)
+    ).all()
+    metrics_by_campaign = {
+        cid: {"spend": float(spend or 0), "impressions": int(impressions or 0),
+              "reach": int(reach or 0), "clicks": int(clicks or 0)}
+        for cid, spend, impressions, reach, clicks in rows
+    }
+
+    registry = db.scalars(
+        select(SyncedCampaign).where(
+            SyncedCampaign.account_id == account.id,
+            SyncedCampaign.status.in_(["ACTIVE", "PAUSED"]),
+        )
+    ).all()
+
+    campaigns = []
+    for row in registry:
+        m = metrics_by_campaign.get(row.campaign_id, {"spend": 0.0, "impressions": 0, "reach": 0, "clicks": 0})
+        campaigns.append({
+            "id": row.campaign_id,
+            "name": row.name,
+            "objective": row.objective,
+            "status": row.status,
+            "spend": m["spend"],
+            "insights": {
+                "impressions": m["impressions"],
+                "reach": m["reach"],
+                "clicks": m["clicks"],
+                "ctr": round(m["clicks"] / m["impressions"] * 100, 2) if m["impressions"] else 0.0,
+            },
+            "ads": [],
+        })
+
+    total_spend = sum(c["spend"] for c in campaigns)
+
+    factor = report_builder._exchange_factor(
+        account.native_currency or "USD", currency,
+        (org.exchange_rate_usd_gtq if org else None) or report_builder.DEFAULT_EXCHANGE_RATE_USD_GTQ,
+    )
+    if factor is not None and factor != 1.0:
+        campaigns, total_spend = report_builder._convert_money(campaigns, total_spend, factor)
+
+    return {
+        "client_name": account.label,
+        "period": report_builder.format_period(date_from, date_to),
+        "campaigns": campaigns,
+        "total_spend": total_spend,
+        "budget": None,
+        "currency_symbol": report_builder.CURRENCY_SYMBOLS.get(currency, "$"),
+        "country_code": None,
+        "general_comment": None,
+        "platform_breakdown": [],
+    }
+
+
 @router.post("/summary")
 async def report_summary(
     data: ReportRequest,
@@ -400,17 +486,27 @@ async def report_summary(
     Igual que /generate pero sin PDF: devuelve el mismo dict que arma el
     reporte (gasto, presupuesto, campañas) en JSON, para el panel de Resumen.
 
-    Se guarda en report_summary_cache (migración 0008) por (cuenta, rango de
-    fechas, moneda, país) y SIEMPRE se sirve desde ahí cuando existe — nadie
-    espera nunca a Meta para ver el Resumen. Si la fila tiene más de
-    _SUMMARY_CACHE_TTL, además se dispara una actualización en segundo plano
-    para la próxima visita (ver _refresh_summary_cache_background). Un
-    período que YA CERRÓ (date_to en el pasado) no vuelve a refrescarse
-    nunca, igual que países y campañas: solo un período que todavía incluye
-    hoy sigue cambiando en vivo y necesita ese refresco periódico.
-    El presupuesto y la personalización por campaña (metrics/comments) se
-    aplican encima de lo cacheado en cada lectura, porque no afectan el
-    gasto en sí y deben reflejar siempre lo que la persona tiene en pantalla.
+    Dos caminos, según si la cuenta ya se sincronizó (ver
+    app/services/daily_sync.py, migración 0009):
+
+    1. YA sincronizada (el caso normal): se contesta sumando de
+       CampaignDailyMetric/SyncedCampaign — sin tocar Meta para nada, sin
+       importar qué rango de fechas se pida (ver _summary_from_local_data).
+    2. Todavía NO se ha sincronizado nunca (cuenta recién agregada): cae al
+       camino viejo, guardado en report_summary_cache (migración 0008) por
+       (cuenta, rango de fechas, moneda, país) — se sirve desde ahí cuando
+       existe, y si tiene más de _SUMMARY_CACHE_TTL dispara una
+       actualización en vivo en segundo plano (ver
+       _refresh_summary_cache_background). Un período ya cerrado no vuelve
+       a refrescarse nunca, igual que países y campañas. Este camino
+       desaparece solo por sí mismo en cuanto el ciclo de sincronización en
+       segundo plano llega a esta cuenta (a lo mucho
+       DAILY_METRICS_SYNC_INTERVAL_MINUTES después de agregarla).
+
+    En ambos, el presupuesto y la personalización por campaña (metrics/
+    comments) se aplican encima del dato ya resuelto en cada lectura,
+    porque no afectan el gasto en sí y deben reflejar siempre lo que la
+    persona tiene en pantalla (ver _apply_summary_overrides).
 
     Este endpoint nunca llegó a funcionar antes de que existiera: quedó
     escrito contra el modelo viejo (reporte por Client) de antes del
@@ -436,6 +532,19 @@ async def report_summary(
         )
 
     currency_value = data.currency.value
+
+    # Camino rápido: la cuenta ya se sincronizó al menos una vez (ver
+    # app/services/daily_sync.py) — el gasto por día ya está guardado
+    # localmente y las fechas son solo un filtro SQL, sin tocar Meta para
+    # nada. Esto reemplaza por completo el camino de abajo (caché +
+    # consulta en vivo) para cualquier cuenta ya sincronizada; ese camino
+    # viejo se queda solo como respaldo mientras una cuenta nueva espera su
+    # primera sincronización (hasta DAILY_METRICS_SYNC_INTERVAL_MINUTES).
+    if account.daily_metrics_synced_until is not None:
+        org = db.get(Organization, current.org_id)
+        raw_result = _summary_from_local_data(db, account, org, data.date_from, data.date_to, currency_value)
+        return _apply_summary_overrides(raw_result, data)
+
     country_key = data.country_code or ""
     cached = db.execute(
         _summary_cache_query(account.id, data.date_from, data.date_to, currency_value, country_key)

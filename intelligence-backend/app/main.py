@@ -23,7 +23,7 @@ from app.api.routes import (
     facebook,
     leads,
 )
-from app.services import assets, browser_pool, crypto_check
+from app.services import assets, browser_pool, crypto_check, daily_sync
 
 # Importa todos los modelos de una vez. Ya no es para `create_all` (ver el
 # lifespan), pero sigue haciendo falta: las `relationship()` se declaran con el
@@ -114,13 +114,20 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_precargar("tipografía del reporte", assets.warm_font())),
     ]
 
+    # Sincronización de gasto diario (ver app/services/daily_sync.py): a
+    # diferencia de las precargas de arriba, esto NO termina — corre en
+    # bucle mientras el servicio esté vivo, así que se cancela junto con
+    # ellas al apagar en vez de esperarse con _precargar.
+    sincronizacion_diaria = asyncio.create_task(daily_sync.run_forever())
+
     yield
 
     # Al apagar: cortar las precargas que sigan en vuelo antes de cerrar el
     # navegador, o `stop()` competiría con un `start()` a medio terminar.
+    sincronizacion_diaria.cancel()
     for tarea in precargas:
         tarea.cancel()
-    await asyncio.gather(*precargas, return_exceptions=True)
+    await asyncio.gather(*precargas, sincronizacion_diaria, return_exceptions=True)
     await browser_pool.stop()
 
 

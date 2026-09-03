@@ -505,7 +505,8 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
 
 async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token: str,
                             level: str, fields: list[str], time_range: str,
-                            attribution_windows: list[str] | None = None) -> list[dict]:
+                            attribution_windows: list[str] | None = None,
+                            time_increment: int | None = None) -> list[dict]:
     """
     Pide los insights de TODA la cuenta (para un `level` dado) por la vía
     ASÍNCRONA de Meta: se crea un job en segundo plano (POST), se espera a
@@ -526,12 +527,20 @@ async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token
     schemas.ATTRIBUTION_WINDOWS). None/vacío = no se manda el parámetro y
     Meta usa el default de CADA cuenta publicitaria, que es como se
     comportaba esto antes de que existiera esta preferencia.
+
+    `time_increment` (ej. 1) parte el resultado en una fila POR DÍA en vez
+    de un solo total para todo `time_range` — lo usa
+    get_daily_campaign_data para traer semanas o meses de historial en UNA
+    sola llamada (ver app/services/daily_sync.py), en vez de una consulta
+    nueva por cada rango de fechas que alguien elija en Resumen.
     """
     params = {
         "level": level,
         "fields": ",".join(fields),
         "time_range": time_range,
     }
+    if time_increment:
+        params["time_increment"] = str(time_increment)
     if attribution_windows:
         params["action_attribution_windows"] = json.dumps(attribution_windows)
     creation = await _post(client, f"{ad_account_id}/insights", token, params)
@@ -621,6 +630,61 @@ async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id:
         raise last_error
 
     return await _platform_breakdown_cache.get_or_fetch(key, fetch)
+
+
+async def get_daily_campaign_data(token: str, ad_account_id: str,
+                                  date_from: str, date_to: str) -> dict:
+    """
+    Trae, en solo dos llamadas sin importar cuántos días o campañas abarque
+    el rango, todo lo que necesita app/services/daily_sync.py para
+    sincronizar una cuenta: la lista de campañas (id/nombre/objetivo/
+    estado) y su gasto DIARIO vía el job asíncrono de insights con
+    `time_increment=1`.
+
+    A diferencia de get_account_data, esto NO trae anuncios ni imágenes —
+    Resumen (el único que usa esto) nunca los necesitó; solo gasto por
+    campaña y por día.
+    """
+    time_range = json.dumps({"since": date_from, "until": date_to})
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        campaigns, daily_rows = await asyncio.gather(
+            get_campaigns(client, token, ad_account_id),
+            _run_insights_job(
+                client, ad_account_id, token, "campaign",
+                ["campaign_id", "spend", "impressions", "reach", "clicks"],
+                time_range, time_increment=1,
+            ),
+        )
+    daily = [
+        {
+            "campaign_id": str(row["campaign_id"]),
+            "date": row.get("date_start"),
+            "spend": float(row.get("spend") or 0),
+            "impressions": int(float(row.get("impressions") or 0)),
+            "reach": int(float(row.get("reach") or 0)),
+            "clicks": int(float(row.get("clicks") or 0)),
+        }
+        for row in daily_rows
+        if row.get("campaign_id") and row.get("date_start")
+    ]
+    return {"campaigns": campaigns, "daily": daily}
+
+
+async def get_daily_campaign_data_with_fallback(tokens: list[str], ad_account_id: str,
+                                                date_from: str, date_to: str) -> dict:
+    """Igual que get_daily_campaign_data, probando varios tokens en orden.
+    Sin caché de proceso: quien llama es el propio ciclo de sincronización
+    en segundo plano (una vez por cuenta), no una petición de alguien
+    viendo Resumen — no hay estampida que evitar aquí."""
+    async with _account_fetch_semaphore:
+        last_error: MetaApiError | None = None
+        for token in tokens:
+            try:
+                return await get_daily_campaign_data(token, ad_account_id, date_from, date_to)
+            except MetaApiError as e:
+                last_error = e
+        assert last_error is not None
+        raise last_error
 
 
 # Cuántos ids se piden por llamada en _fetch_top_ad_creatives. El endpoint

@@ -15,7 +15,10 @@ cada query filtra por org_id y nadie ve datos de otra organización.
 import enum
 from datetime import date, datetime, timezone
 
-from sqlalchemy import String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float, Date, UniqueConstraint
+from sqlalchemy import (
+    String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float, Date, Integer,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -152,6 +155,13 @@ class AdAccount(Base):
     # país. None en ambos = nunca se ha consultado.
     cached_countries: Mapped[list | None] = mapped_column(JSON, nullable=True)
     cached_countries_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Último día hasta el que app/services/daily_sync.py trajo el gasto
+    # DIARIO por campaña (ver CampaignDailyMetric). None = todavía no se ha
+    # sincronizado nunca — /reports/summary usa esto para decidir si puede
+    # contestar sumando de la base de datos (rápido, sin tocar Meta) o si
+    # todavía necesita el camino viejo (una consulta en vivo a Meta) mientras
+    # llega la primera sincronización.
+    daily_metrics_synced_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
     recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -189,14 +199,21 @@ class ReportCampaignsCache(Base):
 
 class ReportSummaryCache(Base):
     """
-    Caché de POST /reports/summary (panel de Resumen) por (cuenta, rango de
-    fechas, moneda, país). Un período que YA CERRÓ (date_to en el pasado) se
-    sirve para siempre, igual que campañas y países. Uno que todavía incluye
-    hoy sigue cambiando en vivo, así que ESE se refresca cada
-    _SUMMARY_CACHE_TTL (ver reports.py) en segundo plano
-    ("stale-while-revalidate"), sin que la persona que tiene Resumen abierto
-    tenga que esperar nunca a Meta — ve el último dato guardado al instante
-    mientras se actualiza para la próxima consulta.
+    Caché DE RESPALDO de POST /reports/summary (panel de Resumen) por
+    (cuenta, rango de fechas, moneda, país) — SOLO se usa mientras una
+    cuenta todavía no se ha sincronizado ni una vez (ver
+    AdAccount.daily_metrics_synced_until y app/services/daily_sync.py,
+    migración 0009). Una vez que una cuenta ya se sincronizó, Resumen
+    contesta sumando CampaignDailyMetric/SyncedCampaign directamente y esta
+    tabla deja de tocarse para esa cuenta.
+
+    Un período que YA CERRÓ (date_to en el pasado) se sirve para siempre,
+    igual que campañas y países. Uno que todavía incluye hoy sigue
+    cambiando en vivo, así que ESE se refresca cada _SUMMARY_CACHE_TTL (ver
+    reports.py) en segundo plano ("stale-while-revalidate"), sin que la
+    persona que tiene Resumen abierto tenga que esperar nunca a Meta — ve
+    el último dato guardado al instante mientras se actualiza para la
+    próxima consulta.
 
     `payload` guarda la respuesta completa de report_builder.build_report_data
     (ya con la conversión de moneda aplicada, por eso la moneda es parte de
@@ -220,6 +237,63 @@ class ReportSummaryCache(Base):
     country_code: Mapped[str] = mapped_column(String(2), default="")
     payload: Mapped[dict] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class SyncedCampaign(Base):
+    """
+    El "registro" de campañas de una cuenta, según la última vez que
+    app/services/daily_sync.py preguntó a Meta — SIN fecha: es la foto más
+    reciente de qué campañas existen y su nombre/objetivo/estado, no una
+    serie histórica (eso lo guarda CampaignDailyMetric). Existe aparte del
+    gasto diario para que una campaña ACTIVA/PAUSADA sin ningún día de
+    gasto en el rango que alguien pida en Resumen no desaparezca del
+    listado — igual que hacía include_inactive en el camino viejo (Meta en
+    vivo), pero ahora resuelto localmente.
+    """
+    __tablename__ = "synced_campaigns"
+    __table_args__ = (
+        UniqueConstraint("account_id", "campaign_id", name="uq_synced_campaign"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("ad_accounts.id", ondelete="CASCADE"), index=True)
+    campaign_id: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(255))
+    objective: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(20))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class CampaignDailyMetric(Base):
+    """
+    Gasto/alcance de UNA campaña en UN día, según la última sincronización
+    en segundo plano (ver app/services/daily_sync.py). Esta es la pieza que
+    permite que Resumen conteste CUALQUIER rango de fechas sumando filas
+    de aquí, en vez de disparar una consulta nueva a Meta por cada mes o
+    quincena que alguien elija — las fechas dejan de ser un parámetro de
+    "qué pedirle a Meta" y pasan a ser solo un filtro sobre datos que ya
+    tenemos guardados.
+
+    Se trae con `time_increment=1` en el job asíncrono de insights (ver
+    meta_api.get_daily_campaign_data): UNA sola llamada por cuenta cubre
+    TODOS los días del rango, sin importar cuántos sean ni cuántas
+    campañas tenga la cuenta.
+    """
+    __tablename__ = "campaign_daily_metrics"
+    __table_args__ = (
+        UniqueConstraint("account_id", "campaign_id", "date", name="uq_campaign_daily_metric"),
+        Index("idx_campaign_daily_metric_account_date", "account_id", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("ad_accounts.id", ondelete="CASCADE"))
+    campaign_id: Mapped[str] = mapped_column(String(40))
+    date: Mapped[date] = mapped_column(Date)
+    spend: Mapped[float] = mapped_column(Float, default=0.0)
+    impressions: Mapped[int] = mapped_column(Integer, default=0)
+    reach: Mapped[int] = mapped_column(Integer, default=0)
+    clicks: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class ClientPage(Base):
