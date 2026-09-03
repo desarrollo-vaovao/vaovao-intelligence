@@ -190,13 +190,13 @@ class ReportCampaignsCache(Base):
 class ReportSummaryCache(Base):
     """
     Caché de POST /reports/summary (panel de Resumen) por (cuenta, rango de
-    fechas, moneda, país). A diferencia de las campañas y los países, el
-    gasto de un período que incluye hoy sigue cambiando en vivo — así que
-    esto NO se sirve "para siempre": se refresca cada _SUMMARY_CACHE_TTL
-    (ver reports.py) en segundo plano ("stale-while-revalidate"), sin que
-    la persona que tiene Resumen abierto tenga que esperar nunca a Meta —
-    ve el último dato guardado al instante mientras se actualiza para la
-    próxima consulta.
+    fechas, moneda, país). Un período que YA CERRÓ (date_to en el pasado) se
+    sirve para siempre, igual que campañas y países. Uno que todavía incluye
+    hoy sigue cambiando en vivo, así que ESE se refresca cada
+    _SUMMARY_CACHE_TTL (ver reports.py) en segundo plano
+    ("stale-while-revalidate"), sin que la persona que tiene Resumen abierto
+    tenga que esperar nunca a Meta — ve el último dato guardado al instante
+    mientras se actualiza para la próxima consulta.
 
     `payload` guarda la respuesta completa de report_builder.build_report_data
     (ya con la conversión de moneda aplicada, por eso la moneda es parte de

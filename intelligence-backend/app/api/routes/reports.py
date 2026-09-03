@@ -404,9 +404,10 @@ async def report_summary(
     fechas, moneda, país) y SIEMPRE se sirve desde ahí cuando existe — nadie
     espera nunca a Meta para ver el Resumen. Si la fila tiene más de
     _SUMMARY_CACHE_TTL, además se dispara una actualización en segundo plano
-    para la próxima visita (ver _refresh_summary_cache_background); a
-    diferencia de países y campañas, el gasto de un período que incluye hoy
-    sigue cambiando en vivo, así que esta caché nunca se vuelve permanente.
+    para la próxima visita (ver _refresh_summary_cache_background). Un
+    período que YA CERRÓ (date_to en el pasado) no vuelve a refrescarse
+    nunca, igual que países y campañas: solo un período que todavía incluye
+    hoy sigue cambiando en vivo y necesita ese refresco periódico.
     El presupuesto y la personalización por campaña (metrics/comments) se
     aplican encima de lo cacheado en cada lectura, porque no afectan el
     gasto en sí y deben reflejar siempre lo que la persona tiene en pantalla.
@@ -447,7 +448,15 @@ async def report_summary(
 
         result = _apply_summary_overrides(cached.payload, data)
 
-        if datetime.now(timezone.utc) - updated_at >= _SUMMARY_CACHE_TTL:
+        # Un período ya cerrado (date_to en el pasado) no vuelve a cambiar
+        # de gasto — igual que campañas y países, no tiene sentido seguir
+        # refrescándolo cada _SUMMARY_CACHE_TTL para siempre. Sin esto, cada
+        # pestaña de Resumen abierta (que además reconsulta sola cada 5 min,
+        # ver resumen/page.jsx) seguía generando tráfico a Meta por meses ya
+        # cerrados hace tiempo — contribuyó a un "User request limit
+        # reached" real en producción.
+        period_closed = data.date_to < date.today()
+        if not period_closed and datetime.now(timezone.utc) - updated_at >= _SUMMARY_CACHE_TTL:
             asyncio.create_task(_refresh_summary_cache_background(
                 account.id, current.id, data.date_from, data.date_to, currency_value, country_key,
             ))

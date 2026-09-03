@@ -1,16 +1,16 @@
 """
 POST /reports/summary alimenta el panel de Resumen y ahora se guarda en
 report_summary_cache (migración 0008), por (cuenta, rango de fechas,
-moneda, país): a diferencia de países y campañas, el gasto de un período
-que incluye hoy sigue cambiando en vivo, así que esta caché NUNCA se sirve
-"para siempre" — siempre se devuelve al instante desde la base de datos, y
-si tiene más de _SUMMARY_CACHE_TTL se dispara un refresco en segundo plano
-para la PRÓXIMA visita, sin que quien pidió el resumen esta vez tenga que
-esperarlo.
+moneda, país): siempre se devuelve al instante desde la base de datos. Un
+período que YA CERRÓ (date_to en el pasado) se sirve para siempre, igual
+que campañas y países. Uno que todavía incluye hoy sigue cambiando en
+vivo, así que ESE dispara un refresco en segundo plano cuando la fila
+tiene más de _SUMMARY_CACHE_TTL, para la PRÓXIMA visita, sin que quien
+pidió el resumen esta vez tenga que esperarlo.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import app.api.routes.reports as reports_routes
 from app.models import ReportSummaryCache
@@ -96,13 +96,16 @@ def test_con_cache_fresca_no_llama_a_meta(monkeypatch, client, login, tenant_a, 
     assert r.json()["total_spend"] == 10.0
 
 
-def test_con_cache_vencida_devuelve_lo_cacheado_y_agenda_refresco(
+def test_con_cache_vencida_de_periodo_abierto_devuelve_lo_cacheado_y_agenda_refresco(
     monkeypatch, client, login, tenant_a, factory, db,
 ):
+    """Un período que todavía incluye HOY sigue acumulando gasto en Meta,
+    así que una caché vencida sí dispara un refresco en segundo plano."""
     login(tenant_a.owner)
     account = factory.ad_account(tenant_a.client)
+    hoy = date.today()
     db.add(ReportSummaryCache(
-        account_id=account.id, date_from=datetime(2026, 1, 1).date(), date_to=datetime(2026, 1, 15).date(),
+        account_id=account.id, date_from=hoy - timedelta(days=5), date_to=hoy,
         currency="USD", country_code="",
         payload={
             "client_name": "x", "period": "x", "campaigns": [_fake_campaign("1")], "total_spend": 10.0,
@@ -115,13 +118,45 @@ def test_con_cache_vencida_devuelve_lo_cacheado_y_agenda_refresco(
     llamadas = _no_background_refresh(monkeypatch)
 
     r = client.post("/reports/summary", json={
-        "ad_account_id": account.id, "date_from": "2026-01-01", "date_to": "2026-01-15",
+        "ad_account_id": account.id,
+        "date_from": (hoy - timedelta(days=5)).isoformat(), "date_to": hoy.isoformat(),
         "currency": "USD",
     })
     assert r.status_code == 200
     # Responde al instante con lo que ya había, no espera el refresco.
     assert r.json()["total_spend"] == 10.0
     assert len(llamadas) == 1
+
+
+def test_con_cache_vencida_de_periodo_cerrado_nunca_agenda_refresco(
+    monkeypatch, client, login, tenant_a, factory, db,
+):
+    """Un período que ya cerró no vuelve a cambiar de gasto -- refrescarlo
+    para siempre solo gasta llamadas a Meta sin necesidad (esto contribuyó
+    a un "User request limit reached" real: cada pestaña de Resumen
+    abierta reconsulta sola cada 5 min, ver resumen/page.jsx)."""
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    db.add(ReportSummaryCache(
+        account_id=account.id, date_from=date(2026, 1, 1), date_to=date(2026, 1, 15),
+        currency="USD", country_code="",
+        payload={
+            "client_name": "x", "period": "x", "campaigns": [_fake_campaign("1")], "total_spend": 10.0,
+            "budget": None, "currency_symbol": "$", "country_code": None,
+            "general_comment": None, "platform_breakdown": [],
+        },
+        updated_at=datetime.now(timezone.utc) - timedelta(days=400),
+    ))
+    db.commit()
+    llamadas = _no_background_refresh(monkeypatch)
+
+    r = client.post("/reports/summary", json={
+        "ad_account_id": account.id, "date_from": "2026-01-01", "date_to": "2026-01-15",
+        "currency": "USD",
+    })
+    assert r.status_code == 200
+    assert r.json()["total_spend"] == 10.0
+    assert len(llamadas) == 0
 
 
 def test_con_cache_fresca_no_agenda_refresco(monkeypatch, client, login, tenant_a, factory, db):
