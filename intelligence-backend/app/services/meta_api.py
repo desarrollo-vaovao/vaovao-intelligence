@@ -18,6 +18,7 @@ Mejoras respecto al Node:
 """
 import os
 import json
+import time
 import random
 import asyncio
 import httpx
@@ -51,6 +52,85 @@ _semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
 _RATE_LIMIT_CODES = {4, 17, 32, 613}
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 2.0  # segundos; backoff exponencial con jitter
+
+
+class _TTLCache:
+    """
+    Caché en memoria del PROCESO, con anti-estampida ("single-flight"): si
+    dos llamadas concurrentes piden la MISMA clave mientras todavía no hay
+    nada en caché, la segunda espera a que termine la primera en vez de
+    disparar su propio llamado a Meta — solo la primera realmente golpea
+    la Graph API.
+
+    Por qué hace falta: Resumen, Reportes, el selector de país y el modal
+    de personalizar métricas terminan todos llamando a
+    get_account_data_with_fallback / get_platform_breakdown_with_fallback.
+    Con pocas personas usando la app eso no se nota, pero con 10-100
+    usuarios generando reportes casi al mismo tiempo, varios piden
+    exactamente los MISMOS datos (misma cuenta, mismo rango de fechas) en
+    la misma ventana de segundos — sin esto, cada uno dispara su propio
+    fetch completo, y ESE volumen extra (no el uso real) es lo que
+    dispara "User request limit reached" al crecer el equipo.
+
+    Es memoria de proceso, no una base de datos ni Redis: alcanza porque
+    hoy el backend corre en UNA sola instancia (ver Railway). Si algún día
+    se escala a varias instancias, esta caché deja de compartirse entre
+    ellas — habría que moverla a un almacén externo (Redis) para que el
+    anti-estampida siga funcionando entre procesos.
+    """
+
+    def __init__(self, ttl_seconds: float):
+        self._ttl = ttl_seconds
+        self._store: dict[tuple, tuple[float, object]] = {}
+        self._locks: dict[tuple, asyncio.Lock] = {}
+
+    async def get_or_fetch(self, key: tuple, fetch):
+        now = time.monotonic()
+        cached = self._store.get(key)
+        if cached and now - cached[0] < self._ttl:
+            return cached[1]
+
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            # Re-chequear: mientras esperábamos el lock, quien lo tenía
+            # pudo haber terminado de llenar la caché con esta misma clave.
+            now = time.monotonic()
+            cached = self._store.get(key)
+            if cached and now - cached[0] < self._ttl:
+                return cached[1]
+
+            # NO se cachea un error (rate limit, token inválido, etc.): si
+            # se cacheara, un fallo transitorio quedaría "pegado" durante
+            # todo el TTL en vez de poder resolverse en el siguiente intento.
+            value = await fetch()
+            now = time.monotonic()
+            self._store[key] = (now, value)
+            self._prune(now)
+            return value
+
+    def _prune(self, now: float) -> None:
+        """Bota entradas vencidas en cada escritura — evita que la caché
+        (y el diccionario de locks) crezcan sin límite con cuentas o
+        rangos de fecha que ya no se vuelven a pedir."""
+        expired = [k for k, (ts, _) in self._store.items() if now - ts >= self._ttl]
+        for k in expired:
+            self._store.pop(k, None)
+            self._locks.pop(k, None)
+
+    def clear(self) -> None:
+        """Solo para pruebas: sin esto, una caché a nivel de módulo
+        compartiría resultados de una prueba con la siguiente."""
+        self._store.clear()
+        self._locks.clear()
+
+
+# TTL corto a propósito: alcanza para absorber la ráfaga de gente pidiendo
+# el MISMO reporte casi al mismo tiempo, sin que un reporte se sienta
+# "viejo" — el gasto real de una campaña no cambia sensiblemente en un par
+# de minutos.
+_ACCOUNT_DATA_CACHE_TTL = float(os.getenv("META_ACCOUNT_DATA_CACHE_TTL", "180"))
+_account_data_cache = _TTLCache(_ACCOUNT_DATA_CACHE_TTL)
+_platform_breakdown_cache = _TTLCache(_ACCOUNT_DATA_CACHE_TTL)
 
 # Métricas que pedimos según el objetivo de la campaña (igual que en Node)
 METRICS_BY_OBJECTIVE = {
@@ -353,17 +433,29 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
     central de la organización) hasta que uno funcione. Así, una vez que el
     token central tiene permiso sobre una cuenta, cualquier persona del equipo
     puede generar su reporte aunque su Facebook personal no tenga acceso.
+
+    El resultado se cachea unos minutos (ver _TTLCache) por
+    (cuenta, rango de fechas, atribución, include_inactive,
+    include_ad_insights) — SIN incluir los tokens en la clave, porque el
+    dato que devuelve Meta es el mismo sin importar cuál token válido se
+    haya usado para leerlo.
     """
-    last_error: MetaApiError | None = None
-    for token in tokens:
-        try:
-            return await get_account_data(token, ad_account_id, date_from, date_to,
-                                          attribution_windows, include_inactive,
-                                          include_ad_insights)
-        except MetaApiError as e:
-            last_error = e
-    assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
-    raise last_error
+    key = (ad_account_id, date_from, date_to, tuple(attribution_windows or ()),
+           include_inactive, include_ad_insights)
+
+    async def fetch() -> dict:
+        last_error: MetaApiError | None = None
+        for token in tokens:
+            try:
+                return await get_account_data(token, ad_account_id, date_from, date_to,
+                                              attribution_windows, include_inactive,
+                                              include_ad_insights)
+            except MetaApiError as e:
+                last_error = e
+        assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
+        raise last_error
+
+    return await _account_data_cache.get_or_fetch(key, fetch)
 
 
 async def _run_insights_job(client: httpx.AsyncClient, ad_account_id: str, token: str,
@@ -469,15 +561,21 @@ async def get_platform_breakdown(token: str, ad_account_id: str,
 
 async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id: str,
                                                date_from: str, date_to: str) -> list[dict]:
-    """Igual que get_platform_breakdown, probando varios tokens en orden."""
-    last_error: MetaApiError | None = None
-    for token in tokens:
-        try:
-            return await get_platform_breakdown(token, ad_account_id, date_from, date_to)
-        except MetaApiError as e:
-            last_error = e
-    assert last_error is not None
-    raise last_error
+    """Igual que get_platform_breakdown, probando varios tokens en orden.
+    Cacheado igual que get_account_data_with_fallback — ver _TTLCache."""
+    key = (ad_account_id, date_from, date_to)
+
+    async def fetch() -> list[dict]:
+        last_error: MetaApiError | None = None
+        for token in tokens:
+            try:
+                return await get_platform_breakdown(token, ad_account_id, date_from, date_to)
+            except MetaApiError as e:
+                last_error = e
+        assert last_error is not None
+        raise last_error
+
+    return await _platform_breakdown_cache.get_or_fetch(key, fetch)
 
 
 async def _fetch_top_ad_creatives(token: str, ad_ids: list[str]) -> dict[str, str | None]:

@@ -499,3 +499,24 @@ def _sin_llamada_real_de_desglose_por_plataforma(monkeypatch):
         return []
 
     monkeypatch.setattr(meta_api, "get_platform_breakdown", fake_get_platform_breakdown)
+
+
+@pytest.fixture(autouse=True)
+def _cachés_de_meta_limpias():
+    """
+    get_account_data_with_fallback y get_platform_breakdown_with_fallback
+    cachean su resultado unos minutos a nivel de módulo (ver meta_api._TTLCache)
+    para no golpear a Meta repetido cuando muchas personas piden lo mismo
+    casi al mismo tiempo. Esa caché es un singleton de módulo — sin
+    limpiarla entre pruebas, una prueba que llena la caché para
+    ("act_1", "2026-01-01", "2026-01-15", ...) haría que la SIGUIENTE
+    prueba con esos mismos parámetros reciba ese resultado viejo en vez de
+    ejercitar su propio mock.
+    """
+    from app.services import meta_api
+
+    meta_api._account_data_cache.clear()
+    meta_api._platform_breakdown_cache.clear()
+    yield
+    meta_api._account_data_cache.clear()
+    meta_api._platform_breakdown_cache.clear()
