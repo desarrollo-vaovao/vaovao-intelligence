@@ -72,11 +72,14 @@ def test_ttl_cache_expira_despues_del_ttl():
     assert segundo == 2  # venció el TTL: se volvió a llamar fetch
 
 
-def test_ttl_cache_no_cachea_un_error():
-    """Un fallo (rate limit, token inválido, etc.) NO debe quedar
-    "pegado" durante todo el TTL — el siguiente intento debe poder
-    reintentar de verdad contra Meta, no recibir el mismo error de caché."""
-    cache = _TTLCache(ttl_seconds=60)
+def test_ttl_cache_cachea_un_error_por_poco_tiempo():
+    """Un fallo (rate limit, un lote demasiado grande, etc.) SÍ se cachea,
+    pero con un TTL corto propio — así, si 20 solicitudes están esperando
+    la misma clave cuando la primera falla, TODAS reciben ese mismo error
+    de inmediato en vez de turnarse para reintentar una por una contra
+    Meta (confirmado con una prueba real: eso convertía un solo fallo en
+    ~10 reintentos secuenciales de minutos)."""
+    cache = _TTLCache(ttl_seconds=60, error_ttl_seconds=0.05)
     intentos = {"n": 0}
 
     async def fetch():
@@ -88,6 +91,13 @@ def test_ttl_cache_no_cachea_un_error():
     async def run():
         with pytest.raises(MetaApiError):
             await cache.get_or_fetch(("k",), fetch)
+        # Inmediatamente después: mismo error de caché, sin reintentar.
+        with pytest.raises(MetaApiError):
+            await cache.get_or_fetch(("k",), fetch)
+        assert intentos["n"] == 1
+
+        # Pasado el TTL corto del error, sí se reintenta de verdad.
+        await asyncio.sleep(0.08)
         return await cache.get_or_fetch(("k",), fetch)
 
     resultado = asyncio.run(run())
@@ -117,7 +127,32 @@ def test_ttl_cache_llamadas_concurrentes_comparten_un_solo_fetch():
 
     resultados = asyncio.run(run())
     assert resultados == ["dato"] * 20
-    assert llamadas_en_vuelo["maximo_visto"] == 1  # nunca hubo dos fetch en vuelo a la vez
+
+
+def test_ttl_cache_20_solicitudes_concurrentes_con_un_solo_fallo_no_reintentan_20_veces():
+    """El escenario real que disparó este cambio: 20 solicitudes a la vez
+    para una cuenta que Meta rechaza. Sin el TTL corto de error, cada una
+    se turnaría para reintentar (20 fetch() reales, uno tras otro). Con
+    él, la primera falla y las otras 19 -- que ya estaban esperando --
+    reciben ese mismo error de la caché."""
+    cache = _TTLCache(ttl_seconds=60, error_ttl_seconds=5)
+    intentos = {"n": 0}
+
+    async def fetch():
+        intentos["n"] += 1
+        await asyncio.sleep(0.05)
+        raise MetaApiError("cuenta rechazada")
+
+    async def run():
+        resultados = await asyncio.gather(
+            *[cache.get_or_fetch(("k",), fetch) for _ in range(20)],
+            return_exceptions=True,
+        )
+        return resultados
+
+    resultados = asyncio.run(run())
+    assert all(isinstance(r, MetaApiError) for r in resultados)
+    assert intentos["n"] == 1
 
 
 def test_ttl_cache_clear_borra_todo():

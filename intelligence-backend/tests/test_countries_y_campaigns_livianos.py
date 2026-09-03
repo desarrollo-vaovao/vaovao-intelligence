@@ -179,6 +179,48 @@ def test_fetch_top_ad_creatives_manda_los_ids_juntos_en_un_solo_llamado(monkeypa
     assert result == {"a1": "https://x/a1.jpg", "a2": "https://x/a2.jpg"}
 
 
+def test_fetch_top_ad_creatives_divide_en_lotes_para_cuentas_con_muchas_campanas(monkeypatch):
+    """El bug real que tumbaba el reporte completo de una cuenta con 526
+    campañas: pedir la imagen de las 526 en un solo "?ids=..." excede el
+    límite de objetos por lote de Meta, que rechaza la llamada COMPLETA.
+    Ahora se pide en lotes de _TOP_AD_CREATIVES_BATCH_SIZE."""
+    llamadas = []
+    monkeypatch.setattr(meta_api, "_TOP_AD_CREATIVES_BATCH_SIZE", 2)
+
+    async def fake_get(client, path, token, params):
+        ids = params["ids"].split(",")
+        llamadas.append(ids)
+        return {ad_id: {"creative": {"thumbnail_url": f"https://x/{ad_id}.jpg"}} for ad_id in ids}
+
+    monkeypatch.setattr(meta_api, "_get", fake_get)
+    result = asyncio.run(meta_api._fetch_top_ad_creatives("token", ["a1", "a2", "a3", "a4", "a5"]))
+
+    assert len(llamadas) == 3  # 5 ids en lotes de 2: [2, 2, 1]
+    assert sorted(len(l) for l in llamadas) == [1, 2, 2]
+    assert result == {
+        "a1": "https://x/a1.jpg", "a2": "https://x/a2.jpg", "a3": "https://x/a3.jpg",
+        "a4": "https://x/a4.jpg", "a5": "https://x/a5.jpg",
+    }
+
+
+def test_fetch_top_ad_creatives_un_lote_que_falla_no_tumba_los_demas(monkeypatch):
+    """Un lote rechazado por Meta se ignora (esas campañas quedan sin
+    imagen) en vez de tirar el reporte completo -- la imagen es
+    decorativa, no el dato que importa."""
+    monkeypatch.setattr(meta_api, "_TOP_AD_CREATIVES_BATCH_SIZE", 1)
+
+    async def fake_get(client, path, token, params):
+        ad_id = params["ids"]
+        if ad_id == "malo":
+            raise meta_api.MetaApiError("lote rechazado")
+        return {ad_id: {"creative": {"thumbnail_url": f"https://x/{ad_id}.jpg"}}}
+
+    monkeypatch.setattr(meta_api, "_get", fake_get)
+    result = asyncio.run(meta_api._fetch_top_ad_creatives("token", ["bueno", "malo"]))
+
+    assert result == {"bueno": "https://x/bueno.jpg"}  # "malo" no aparece, pero no revienta
+
+
 # ── Las rutas piden la versión liviana ──────────────────────────────────
 def test_ruta_countries_pide_sin_insights_de_anuncio(client, login, tenant_a, factory, monkeypatch):
     import app.api.routes.reports as reports_routes

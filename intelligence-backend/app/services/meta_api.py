@@ -79,16 +79,35 @@ class _TTLCache:
     anti-estampida siga funcionando entre procesos.
     """
 
-    def __init__(self, ttl_seconds: float):
+    def __init__(self, ttl_seconds: float, error_ttl_seconds: float | None = None):
         self._ttl = ttl_seconds
-        self._store: dict[tuple, tuple[float, object]] = {}
+        # Un error SÍ se cachea, pero mucho menos tiempo que un éxito — lo
+        # justo para que, si Meta genuinamente está rechazando esta cuenta
+        # ahora mismo (rate limit, un lote demasiado grande, etc.), TODAS
+        # las solicitudes que ya estaban esperando reciban ese mismo error
+        # de inmediato en vez de que cada una, una por una, se turne para
+        # reintentar contra Meta y tarde lo mismo en volver a fallar.
+        # Confirmado con una prueba real: sin esto, 20 solicitudes a una
+        # cuenta de 526 campañas se convirtieron en ~10 reintentos
+        # SECUENCIALES de ~20-50s cada uno (session completa: minutos).
+        self._error_ttl = error_ttl_seconds if error_ttl_seconds is not None else min(ttl_seconds, 15.0)
+        # (timestamp, es_error, valor_o_excepcion)
+        self._store: dict[tuple, tuple[float, bool, object]] = {}
         self._locks: dict[tuple, asyncio.Lock] = {}
+
+    def _fresh(self, entry: tuple[float, bool, object], now: float) -> bool:
+        ts, is_error, _ = entry
+        ttl = self._error_ttl if is_error else self._ttl
+        return now - ts < ttl
 
     async def get_or_fetch(self, key: tuple, fetch):
         now = time.monotonic()
         cached = self._store.get(key)
-        if cached and now - cached[0] < self._ttl:
-            return cached[1]
+        if cached and self._fresh(cached, now):
+            _, is_error, payload = cached
+            if is_error:
+                raise payload
+            return payload
 
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
@@ -96,15 +115,21 @@ class _TTLCache:
             # pudo haber terminado de llenar la caché con esta misma clave.
             now = time.monotonic()
             cached = self._store.get(key)
-            if cached and now - cached[0] < self._ttl:
-                return cached[1]
+            if cached and self._fresh(cached, now):
+                _, is_error, payload = cached
+                if is_error:
+                    raise payload
+                return payload
 
-            # NO se cachea un error (rate limit, token inválido, etc.): si
-            # se cacheara, un fallo transitorio quedaría "pegado" durante
-            # todo el TTL en vez de poder resolverse en el siguiente intento.
-            value = await fetch()
+            try:
+                value = await fetch()
+            except Exception as exc:
+                now = time.monotonic()
+                self._store[key] = (now, True, exc)
+                self._prune(now)
+                raise
             now = time.monotonic()
-            self._store[key] = (now, value)
+            self._store[key] = (now, False, value)
             self._prune(now)
             return value
 
@@ -112,7 +137,7 @@ class _TTLCache:
         """Bota entradas vencidas en cada escritura — evita que la caché
         (y el diccionario de locks) crezcan sin límite con cuentas o
         rangos de fecha que ya no se vuelven a pedir."""
-        expired = [k for k, (ts, _) in self._store.items() if now - ts >= self._ttl]
+        expired = [k for k, entry in self._store.items() if not self._fresh(entry, now)]
         for k in expired:
             self._store.pop(k, None)
             self._locks.pop(k, None)
@@ -578,6 +603,16 @@ async def get_platform_breakdown_with_fallback(tokens: list[str], ad_account_id:
     return await _platform_breakdown_cache.get_or_fetch(key, fetch)
 
 
+# Cuántos ids se piden por llamada en _fetch_top_ad_creatives. El endpoint
+# "?ids=..." de Meta tiene un límite de objetos por lote — una cuenta con
+# muchas campañas (una imagen por campaña, una por lote) fácilmente lo
+# supera, y Meta rechaza la llamada COMPLETA por eso (no unos pocos ids,
+# todos). Confirmado con una cuenta real de más de 500 campañas: esa
+# falla tumbaba el reporte entero aunque ya se tenían todos los demás
+# datos listos.
+_TOP_AD_CREATIVES_BATCH_SIZE = 50
+
+
 async def _fetch_top_ad_creatives(token: str, ad_ids: list[str]) -> dict[str, str | None]:
     """
     Trae la imagen (thumbnail/creative) SOLO de los anuncios pedidos —
@@ -590,22 +625,39 @@ async def _fetch_top_ad_creatives(token: str, ad_ids: list[str]) -> dict[str, st
     cuenta, sin importar cuántos fueran a mostrarse. En una cuenta con
     muchos anuncios eso inflaba esa consulta (que corre en paralelo a los
     dos jobs de insights, así que su duración también cuenta) por datos
-    que se descartaban. Este segundo llamado es UNO SOLO — el endpoint
-    "?ids=..." de Meta permite pedir varios objetos a la vez — y su costo
-    escala con el número de CAMPAÑAS, no de anuncios.
+    que se descartaban. Este segundo llamado usa el endpoint "?ids=..."
+    de Meta, que permite pedir varios objetos a la vez — pero en LOTES de
+    _TOP_AD_CREATIVES_BATCH_SIZE (ver arriba), en paralelo entre sí.
+
+    Un lote que falla se ignora (esas campañas quedan sin imagen, con el
+    "Sin imagen" que ya dibuja el PDF) en vez de tirar el reporte
+    completo: la imagen es decorativa, no el dato que importa del reporte.
     """
     if not ad_ids:
         return {}
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        data = await _get(client, "", token, {
-            "ids": ",".join(ad_ids),
-            "fields": "creative{thumbnail_url,image_url}",
-        })
-    result: dict[str, str | None] = {}
-    for ad_id, obj in data.items():
-        creative = (obj or {}).get("creative") or {}
-        result[ad_id] = creative.get("thumbnail_url") or creative.get("image_url")
-    return result
+
+    async def fetch_batch(batch: list[str]) -> dict[str, str | None]:
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                data = await _get(client, "", token, {
+                    "ids": ",".join(batch),
+                    "fields": "creative{thumbnail_url,image_url}",
+                })
+        except MetaApiError:
+            return {}
+        out: dict[str, str | None] = {}
+        for ad_id, obj in data.items():
+            creative = (obj or {}).get("creative") or {}
+            out[ad_id] = creative.get("thumbnail_url") or creative.get("image_url")
+        return out
+
+    batches = [ad_ids[i:i + _TOP_AD_CREATIVES_BATCH_SIZE]
+              for i in range(0, len(ad_ids), _TOP_AD_CREATIVES_BATCH_SIZE)]
+    results = await asyncio.gather(*[fetch_batch(b) for b in batches])
+    merged: dict[str, str | None] = {}
+    for r in results:
+        merged.update(r)
+    return merged
 
 
 async def get_account_data(token: str, ad_account_id: str, date_from: str, date_to: str,
