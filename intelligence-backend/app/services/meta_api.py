@@ -45,6 +45,25 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 _MAX_CONCURRENCY = int(os.getenv("META_MAX_CONCURRENCY", "8"))
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
 
+# Cuántas cuentas DISTINTAS se pueden estar trayendo de Meta a la vez EN
+# TODO EL PROCESO — no cuántas llamadas HTTP sueltas (eso ya lo limita
+# _semaphore arriba), sino cuántos "get_account_data completos" (cada uno
+# con su propio listado de campañas, dos jobs de insights con su propio
+# polling, listado de anuncios y lotes de imágenes) corren en paralelo.
+#
+# Por qué hace falta ADEMÁS de la caché anti-estampida (_TTLCache): esta
+# solo ayuda cuando VARIAS personas piden EXACTAMENTE lo mismo (misma
+# cuenta, mismo rango). Si en cambio se generan 20-50 reportes de
+# CLIENTES DISTINTOS casi al mismo tiempo, cada uno es una consulta
+# genuinamente distinta — no hay nada que compartir. Sin este límite,
+# las 50 saldrían disparadas a la vez, cada una con su propia ráfaga de
+# llamadas (sobre todo el polling de los jobs de insights, que por cuenta
+# grande puede ser decenas de peticiones), lo que sí dispara el límite
+# real de Meta para ese token. Con el límite, las de más simplemente
+# esperan su turno en fila — tardan más, pero no fallan.
+_ACCOUNT_FETCH_CONCURRENCY = int(os.getenv("META_ACCOUNT_FETCH_CONCURRENCY", "6"))
+_account_fetch_semaphore = asyncio.Semaphore(_ACCOUNT_FETCH_CONCURRENCY)
+
 # Códigos de error de Meta que indican rate limiting (transitorio: vale la
 # pena esperar y reintentar en vez de tirar todo el reporte).
 # 4 = "Application request limit reached", 17 = "User request limit reached",
@@ -469,16 +488,17 @@ async def get_account_data_with_fallback(tokens: list[str], ad_account_id: str,
            include_inactive, include_ad_insights)
 
     async def fetch() -> dict:
-        last_error: MetaApiError | None = None
-        for token in tokens:
-            try:
-                return await get_account_data(token, ad_account_id, date_from, date_to,
-                                              attribution_windows, include_inactive,
-                                              include_ad_insights)
-            except MetaApiError as e:
-                last_error = e
-        assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
-        raise last_error
+        async with _account_fetch_semaphore:
+            last_error: MetaApiError | None = None
+            for token in tokens:
+                try:
+                    return await get_account_data(token, ad_account_id, date_from, date_to,
+                                                  attribution_windows, include_inactive,
+                                                  include_ad_insights)
+                except MetaApiError as e:
+                    last_error = e
+            assert last_error is not None  # tokens nunca llega vacío (se valida antes de llamar)
+            raise last_error
 
     return await _account_data_cache.get_or_fetch(key, fetch)
 
