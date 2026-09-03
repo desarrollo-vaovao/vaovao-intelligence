@@ -295,6 +295,16 @@ async def report_summary(
         account, tokens, current, db
     )
 
+    # De aquí en adelante ya no se toca la base de datos: se cierra la
+    # conexión ANTES de la espera larga a Meta (puede tardar minutos en
+    # cuentas grandes) en vez de dejarla ocupada del pool (5 + 10 de
+    # overflow = 15 como máximo) durante todo ese tiempo. Sin esto, varias
+    # personas generando reportes a la vez agotan el pool
+    # ("QueuePool limit... connection timed out") mucho antes de que Meta
+    # alcance a responder — confirmado con una prueba de carga real contra
+    # producción (20 solicitudes concurrentes a un cliente pesado).
+    db.close()
+
     try:
         return await report_builder.build_report_data(
             account, tokens, data.date_from, data.date_to, data.budget,
@@ -324,6 +334,8 @@ async def check_access(
     tokens, error = resolve_tokens(current, db)
     if not tokens:
         return CheckAccessResult(ok=False, detail=error)
+
+    db.close()  # ver el comentario en /reports/summary
 
     ok, detail = await meta_api.check_account_access_with_fallback(tokens, account.meta_ad_account_id)
     return CheckAccessResult(ok=ok, detail=detail)
@@ -360,6 +372,11 @@ async def get_available_countries(
 
     org = db.get(Organization, current.org_id)
     attribution_windows = ATTRIBUTION_WINDOWS.get(org.attribution_window if org else None)
+
+    # Ver el mismo comentario en /reports/summary: cerrar la conexión ANTES
+    # de esperar a Meta, no después, para no agotar el pool de la base de
+    # datos si muchas personas piden esto a la vez.
+    db.close()
 
     try:
         data = await meta_api.get_account_data_with_fallback(
@@ -414,6 +431,9 @@ async def get_report_campaigns(
 
     org = db.get(Organization, current.org_id)
     attribution_windows = ATTRIBUTION_WINDOWS.get(org.attribution_window if org else None)
+
+    # Ver el mismo comentario en /reports/summary.
+    db.close()
 
     try:
         data = await meta_api.get_account_data_with_fallback(
