@@ -187,6 +187,41 @@ class ReportCampaignsCache(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ReportSummaryCache(Base):
+    """
+    Caché de POST /reports/summary (panel de Resumen) por (cuenta, rango de
+    fechas, moneda, país). A diferencia de las campañas y los países, el
+    gasto de un período que incluye hoy sigue cambiando en vivo — así que
+    esto NO se sirve "para siempre": se refresca cada _SUMMARY_CACHE_TTL
+    (ver reports.py) en segundo plano ("stale-while-revalidate"), sin que
+    la persona que tiene Resumen abierto tenga que esperar nunca a Meta —
+    ve el último dato guardado al instante mientras se actualiza para la
+    próxima consulta.
+
+    `payload` guarda la respuesta completa de report_builder.build_report_data
+    (ya con la conversión de moneda aplicada, por eso la moneda es parte de
+    la llave). El presupuesto y la personalización por campaña (metrics/
+    comments) NO son parte de la llave porque no cambian el gasto en sí:
+    se sobreescriben en la respuesta en el momento de leer la caché.
+    """
+    __tablename__ = "report_summary_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "date_from", "date_to", "currency", "country_code",
+            name="uq_summary_cache_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("ad_accounts.id", ondelete="CASCADE"), index=True)
+    date_from: Mapped[date] = mapped_column(Date)
+    date_to: Mapped[date] = mapped_column(Date)
+    currency: Mapped[str] = mapped_column(String(3))
+    country_code: Mapped[str] = mapped_column(String(2), default="")
+    payload: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class ClientPage(Base):
     """
     Página de Facebook de un cliente — la llave de enrutamiento de los leads:

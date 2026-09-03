@@ -19,6 +19,7 @@ Endpoints:
 - POST /reports/check-access        → verifica en vivo si podemos leer una cuenta
 """
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -30,11 +31,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.core.database import get_db
+from app.core.database import get_db, SessionLocal
 from app.models import (
     User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken,
-    ReportCampaignsCache,
+    ReportCampaignsCache, ReportSummaryCache,
 )
+
+log = logging.getLogger(__name__)
 from app.schemas import (
     ReportStatus,
     ReportRequest,
@@ -65,6 +68,17 @@ _COUNTRIES_CACHE_TTL = timedelta(hours=int(os.getenv("REPORT_COUNTRIES_CACHE_HOU
 # el pasado) no necesita TTL: Meta no reescribe el historial, así que esa
 # fila se sirve para siempre.
 _CAMPAIGNS_CACHE_TTL = timedelta(hours=float(os.getenv("REPORT_CAMPAIGNS_CACHE_HOURS", "1")))
+
+# Cada cuánto se refresca en segundo plano el panel de Resumen (ver
+# ReportSummaryCache, migración 0008). A diferencia de países y campañas,
+# el gasto de un período que incluye hoy sigue cambiando en vivo, así que
+# esto SIEMPRE se refresca — nunca se sirve "para siempre".
+_SUMMARY_CACHE_TTL = timedelta(minutes=float(os.getenv("REPORT_SUMMARY_CACHE_MINUTES", "5")))
+
+# Evita que dos peticiones que llegan casi juntas con la misma caché vencida
+# disparen DOS refrescos en segundo plano para la misma llave — el primero
+# que entra gana, el resto simplemente sigue sirviendo la caché tal cual.
+_summary_refresh_in_flight: set[tuple] = set()
 
 # ── Jobs de generación en segundo plano ─────────────────────────
 # En memoria del proceso: alcanza para el tamaño de este equipo (un solo
@@ -273,6 +287,109 @@ def download_report_job(job_id: str, current: User = Depends(get_current_user)):
     )
 
 
+def _summary_cache_query(account_id: int, date_from: date, date_to: date, currency: str, country_key: str):
+    return select(ReportSummaryCache).where(
+        ReportSummaryCache.account_id == account_id,
+        ReportSummaryCache.date_from == date_from,
+        ReportSummaryCache.date_to == date_to,
+        ReportSummaryCache.currency == currency,
+        ReportSummaryCache.country_code == country_key,
+    )
+
+
+def _apply_summary_overrides(payload: dict, data: ReportRequest) -> dict:
+    """
+    Encima de lo que haya en report_summary_cache (o de una respuesta recién
+    salida de Meta) se sobreponen SIEMPRE el presupuesto y la personalización
+    por campaña de ESTA petición puntual — ninguno de los dos es un dato de
+    Meta, así que nunca se guardan en la caché: si se guardaran, la
+    personalización de la primera persona que pidió este resumen se le
+    quedaría pegada a todos los que lo pidan después, hasta el próximo
+    refresco.
+    """
+    result = dict(payload)
+    result["budget"] = data.budget
+    if data.campaign_metrics or data.campaign_comments:
+        result["campaigns"] = report_builder._apply_customization(
+            result["campaigns"], data.campaign_metrics, data.campaign_comments,
+        )
+    if data.general_comment:
+        result["general_comment"] = data.general_comment
+    return result
+
+
+def _save_summary_cache(db: Session, account_id: int, date_from: date, date_to: date,
+                         currency: str, country_key: str, payload: dict) -> None:
+    row = db.execute(_summary_cache_query(account_id, date_from, date_to, currency, country_key)).scalar_one_or_none()
+    if row is None:
+        row = ReportSummaryCache(
+            account_id=account_id, date_from=date_from, date_to=date_to,
+            currency=currency, country_code=country_key,
+        )
+        db.add(row)
+    row.payload = payload
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+async def _refresh_summary_cache_background(
+    account_id: int, user_id: int, date_from: date, date_to: date, currency: str, country_key: str,
+) -> None:
+    """
+    Repite, en segundo plano, la misma consulta a Meta que ya sirvió esta
+    respuesta desde la caché — para que la PRÓXIMA visita a Resumen ya
+    encuentre el dato al día. Quien pidió el resumen esta vez ya recibió su
+    respuesta (la de la caché); esto no lo bloquea.
+
+    Corre después de que la petición HTTP ya terminó, así que no puede
+    reusar la sesión de esa petición (FastAPI ya la cerró) — abre la suya
+    propia y la cierra al terminar.
+    """
+    key = (account_id, date_from, date_to, currency, country_key)
+    if key in _summary_refresh_in_flight:
+        return
+    _summary_refresh_in_flight.add(key)
+    db = SessionLocal()
+    try:
+        try:
+            account = db.get(AdAccount, account_id)
+            current = db.get(User, user_id)
+            if account is None or current is None:
+                return
+            tokens, error = resolve_tokens(current, db)
+            if not tokens:
+                return
+            org = db.get(Organization, current.org_id)
+            source_currency = account.native_currency or "USD"
+            exchange_rate = org.exchange_rate_usd_gtq if org else None
+            attribution_window = org.attribution_window if org else None
+            db.close()
+
+            payload = await report_builder.build_report_data(
+                account, tokens, date_from, date_to, None, currency, country_key or None,
+                source_currency, exchange_rate, attribution_window,
+                include_inactive=True,
+            )
+            _save_summary_cache(db, account_id, date_from, date_to, currency, country_key, payload)
+        except meta_api.MetaApiError as e:
+            log.warning(
+                "No se pudo refrescar en segundo plano el resumen de la cuenta %s (%s a %s): %s",
+                account_id, date_from, date_to, e,
+            )
+        except Exception:
+            # Un refresco en segundo plano que falla no debe tumbar nada ni
+            # llenar los logs de un traceback ruidoso — quien pidió el
+            # resumen ya recibió su respuesta desde la caché; esto solo
+            # afecta si la PRÓXIMA visita ve datos más o menos frescos.
+            log.exception(
+                "Fallo inesperado refrescando en segundo plano el resumen de la cuenta %s (%s a %s)",
+                account_id, date_from, date_to,
+            )
+    finally:
+        db.close()
+        _summary_refresh_in_flight.discard(key)
+
+
 @router.post("/summary")
 async def report_summary(
     data: ReportRequest,
@@ -283,10 +400,22 @@ async def report_summary(
     Igual que /generate pero sin PDF: devuelve el mismo dict que arma el
     reporte (gasto, presupuesto, campañas) en JSON, para el panel de Resumen.
 
-    Este endpoint nunca llegó a funcionar: quedó escrito contra el modelo
-    viejo (reporte por Client) de antes del refactor a "activo comercial"
-    que ya usa /generate, y arrastraba tres bugs encadenados que un 422
-    genérico en el frontend escondía por completo:
+    Se guarda en report_summary_cache (migración 0008) por (cuenta, rango de
+    fechas, moneda, país) y SIEMPRE se sirve desde ahí cuando existe — nadie
+    espera nunca a Meta para ver el Resumen. Si la fila tiene más de
+    _SUMMARY_CACHE_TTL, además se dispara una actualización en segundo plano
+    para la próxima visita (ver _refresh_summary_cache_background); a
+    diferencia de países y campañas, el gasto de un período que incluye hoy
+    sigue cambiando en vivo, así que esta caché nunca se vuelve permanente.
+    El presupuesto y la personalización por campaña (metrics/comments) se
+    aplican encima de lo cacheado en cada lectura, porque no afectan el
+    gasto en sí y deben reflejar siempre lo que la persona tiene en pantalla.
+
+    Este endpoint nunca llegó a funcionar antes de que existiera: quedó
+    escrito contra el modelo viejo (reporte por Client) de antes del
+    refactor a "activo comercial" que ya usa /generate, y arrastraba tres
+    bugs encadenados que un 422 genérico en el frontend escondía por
+    completo:
       1. ReportRequest.ad_account_id es el campo real del schema; esta
          ruta leía data.client_id, que no existe ahí — Pydantic rechazaba
          la petición ANTES de que el código de abajo corriera.
@@ -304,6 +433,26 @@ async def report_summary(
             status.HTTP_400_BAD_REQUEST,
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
+
+    currency_value = data.currency.value
+    country_key = data.country_code or ""
+    cached = db.execute(
+        _summary_cache_query(account.id, data.date_from, data.date_to, currency_value, country_key)
+    ).scalar_one_or_none()
+
+    if cached is not None:
+        updated_at = cached.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        result = _apply_summary_overrides(cached.payload, data)
+
+        if datetime.now(timezone.utc) - updated_at >= _SUMMARY_CACHE_TTL:
+            asyncio.create_task(_refresh_summary_cache_background(
+                account.id, current.id, data.date_from, data.date_to, currency_value, country_key,
+            ))
+
+        return result
 
     tokens, error = resolve_tokens(current, db)
     if not tokens:
@@ -324,17 +473,19 @@ async def report_summary(
     db.close()
 
     try:
-        return await report_builder.build_report_data(
-            account, tokens, data.date_from, data.date_to, data.budget,
-            data.currency.value, data.country_code,
+        raw_result = await report_builder.build_report_data(
+            account, tokens, data.date_from, data.date_to, None,
+            currency_value, data.country_code,
             source_currency, exchange_rate, attribution_window,
-            data.campaign_metrics, data.campaign_comments, data.general_comment,
             include_inactive=True,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     except meta_api.MetaApiError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Meta: {e}")
+
+    _save_summary_cache(db, account.id, data.date_from, data.date_to, currency_value, country_key, raw_result)
+    return _apply_summary_overrides(raw_result, data)
 
 
 @router.post("/check-access", response_model=CheckAccessResult)

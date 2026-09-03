@@ -102,29 +102,44 @@ export default function ResumenPage() {
   // borraba todo de inmediato y la pantalla completa se reemplazaba por
   // "Cargando…" en cada ajuste, como si la página entera se hubiera
   // recargado.
+  // El backend refresca su caché de Resumen en segundo plano cada ~5 min
+  // (ver REPORT_SUMMARY_CACHE_MINUTES) pero solo la PRÓXIMA vez que alguien
+  // lo pida — si esta pestaña se queda abierta sin que la persona toque
+  // nada, nadie vuelve a pedirlo y el dato se queda viejo en pantalla. Este
+  // intervalo hace esa siguiente pedida por su cuenta, para que el número
+  // se vaya poniendo al día solo mientras alguien lo tiene abierto.
+  const RESUMEN_POLL_MS = 5 * 60 * 1000;
+
   const prevAccountId = useRef(null);
   useEffect(() => {
     if (!client || !dateFrom || !dateTo || !accountId) { setSummary(null); return; }
     let cancelled = false;
+
     if (prevAccountId.current !== accountId) {
       prevAccountId.current = accountId;
       setSummary(loadCachedSummary(accountId));
     }
-    setBusy(true); setErr("");
-    api.reportSummary({
-      ad_account_id: accountId,
-      date_from: dateFrom,
-      date_to: dateTo,
-      budget: budget ? Number(budget) : null,
-      currency,
-    }).then((data) => {
-      if (cancelled) return;
-      setSummary(data);
-      saveCachedSummary(accountId, data);
-    })
-      .catch((e) => { if (!cancelled) setErr(e.message); })
-      .finally(() => { if (!cancelled) setBusy(false); });
-    return () => { cancelled = true; };
+
+    function fetchSummary() {
+      setBusy(true); setErr("");
+      api.reportSummary({
+        ad_account_id: accountId,
+        date_from: dateFrom,
+        date_to: dateTo,
+        budget: budget ? Number(budget) : null,
+        currency,
+      }).then((data) => {
+        if (cancelled) return;
+        setSummary(data);
+        saveCachedSummary(accountId, data);
+      })
+        .catch((e) => { if (!cancelled) setErr(e.message); })
+        .finally(() => { if (!cancelled) setBusy(false); });
+    }
+
+    fetchSummary();
+    const intervalId = setInterval(fetchSummary, RESUMEN_POLL_MS);
+    return () => { cancelled = true; clearInterval(intervalId); };
   }, [client, accountId, dateFrom, dateTo, budget, currency]);
 
   function onBudgetChange(v) {
