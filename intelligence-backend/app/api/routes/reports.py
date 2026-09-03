@@ -19,13 +19,14 @@ Endpoints:
 - POST /reports/check-access        → verifica en vivo si podemos leer una cuenta
 """
 import asyncio
+import os
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -47,6 +48,13 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 # El motor de generación (Meta + PDF) ya está conectado.
 GENERATION_AVAILABLE = True
+
+# Cada cuánto se vuelve a pedir a Meta la lista de países targeteados por
+# una cuenta (ver GET /reports/countries y ad_accounts.cached_countries,
+# migración 0006). El targeting de una cuenta cambia con muy poca
+# frecuencia comparado con el gasto — no hace falta ir a Meta cada vez
+# que alguien abre el selector de país en Reportes.
+_COUNTRIES_CACHE_TTL = timedelta(hours=int(os.getenv("REPORT_COUNTRIES_CACHE_HOURS", "24")))
 
 # ── Jobs de generación en segundo plano ─────────────────────────
 # En memoria del proceso: alcanza para el tamaño de este equipo (un solo
@@ -350,7 +358,12 @@ async def get_available_countries(
     """
     Devuelve la lista de países únicos en los que se han pautado anuncios
     para una cuenta publicitaria. Útil para mostrar un selector en el frontend.
-    Usa el último mes como rango de fechas por defecto.
+
+    Se guarda en ad_accounts.cached_countries (migración 0006) y solo se
+    vuelve a pedir a Meta si pasaron más de _COUNTRIES_CACHE_TTL desde la
+    última vez — el targeting de una cuenta cambia con muy poca
+    frecuencia, a diferencia del gasto. Cuando SÍ hace falta ir a Meta, se
+    usa el último mes como rango de fechas.
 
     Solo necesita el targeting de los anuncios, nunca su performance — pide
     include_ad_insights=False (se salta el job asíncrono de insights por
@@ -358,12 +371,30 @@ async def get_available_countries(
     include_inactive=True (para que una campaña activa/pausada sin gasto
     en los últimos 30 días no le esconda sus países al selector).
     """
-    from datetime import date, timedelta
-
     account = _get_owned_account(account_id, current, db)
+
+    # SQLite (dev local y tests) no conserva la zona horaria de un
+    # DateTime(timezone=True) al releerlo: vuelve como naive. Siempre se
+    # escribe en UTC, así que un valor naive se asume UTC.
+    updated_at = account.cached_countries_updated_at
+    if updated_at is not None and updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    if (
+        account.cached_countries is not None
+        and updated_at is not None
+        and now - updated_at < _COUNTRIES_CACHE_TTL
+    ):
+        return {"countries": account.cached_countries}
 
     tokens, error = resolve_tokens(current, db)
     if not tokens:
+        # Ya había una lista guardada (aunque esté vencida): mejor mostrar
+        # ESA que nada — el selector sigue siendo útil aunque no sea la
+        # más reciente posible.
+        if account.cached_countries is not None:
+            return {"countries": account.cached_countries}
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, error)
 
     # Rango de fechas: últimos 30 días
@@ -385,6 +416,8 @@ async def get_available_countries(
             attribution_windows, include_inactive=True, include_ad_insights=False,
         )
     except meta_api.MetaApiError as e:
+        if account.cached_countries is not None:
+            return {"countries": account.cached_countries}
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Meta: {e}")
 
     countries = set()
@@ -392,7 +425,15 @@ async def get_available_countries(
         for ad in campaign.get("ads", []):
             countries.update(ad.get("countries", []))
 
-    return {"countries": sorted(list(countries))}
+    result = sorted(countries)
+    db.execute(
+        update(AdAccount)
+        .where(AdAccount.id == account_id)
+        .values(cached_countries=result, cached_countries_updated_at=datetime.now(timezone.utc))
+    )
+    db.commit()
+
+    return {"countries": result}
 
 
 @router.get("/campaigns/{account_id}")

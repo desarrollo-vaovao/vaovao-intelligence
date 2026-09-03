@@ -145,6 +145,13 @@ class AdAccount(Base):
     # atribución) — un selector editable estaría mintiendo. Se resuelve
     # on-demand igual que native_currency, en la misma llamada a Meta.
     timezone_name: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # Últimos países targeteados por los anuncios de esta cuenta, según la
+    # última vez que se consultó a Meta (ver GET /reports/countries). Un
+    # targeting cambia con poca frecuencia — a diferencia del gasto, no
+    # hace falta volver a pedirlo cada vez que alguien abre el selector de
+    # país. None en ambos = nunca se ha consultado.
+    cached_countries: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    cached_countries_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
     recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
