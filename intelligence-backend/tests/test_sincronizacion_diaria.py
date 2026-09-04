@@ -78,6 +78,7 @@ def test_primera_vez_trae_los_ultimos_backfill_days(monkeypatch, tenant_a, facto
 
     db.refresh(account)
     assert account.daily_metrics_synced_until == today
+    assert account.daily_metrics_synced_since == today - timedelta(days=daily_sync.BACKFILL_DAYS)
 
     synced = db.query(SyncedCampaign).filter_by(account_id=account.id, campaign_id="1").one()
     assert synced.name == "Campaña 1"
@@ -109,6 +110,46 @@ def test_segunda_vez_trae_desde_lo_ya_sincronizado_con_solapamiento(monkeypatch,
 
     esperado = date.today() - timedelta(days=10) - timedelta(days=daily_sync.OVERLAP_DAYS)
     assert captured["date_from"] == esperado.isoformat()
+
+
+def test_synced_since_no_se_mueve_en_sincronizaciones_posteriores(monkeypatch, tenant_a, factory, db):
+    """El límite inferior del backfill se fija UNA sola vez -- las
+    sincronizaciones incrementales de después no lo adelantan, o una
+    consulta a un mes viejo empezaría a devolver "$0" en silencio."""
+    account = factory.ad_account(tenant_a.client)
+    limite_original = date(2026, 1, 1)
+    account.daily_metrics_synced_until = date.today() - timedelta(days=1)
+    account.daily_metrics_synced_since = limite_original
+    db.commit()
+    _central_token(db, tenant_a.org)
+
+    monkeypatch.setattr(meta_api, "get_daily_campaign_data_with_fallback", _fake_data([], []))
+
+    asyncio.run(daily_sync.sync_account(account.id))
+
+    db.refresh(account)
+    assert account.daily_metrics_synced_since == limite_original
+
+
+def test_cuenta_sincronizada_antes_de_esta_columna_recibe_synced_since_ahora(
+    monkeypatch, tenant_a, factory, db,
+):
+    """Una cuenta que ya se sincronizó con una versión anterior de este
+    módulo (antes de que existiera daily_metrics_synced_since) tiene ese
+    campo en NULL -- se resuelve en su próxima sincronización, asumiendo
+    el mismo BACKFILL_DAYS de siempre."""
+    account = factory.ad_account(tenant_a.client)
+    account.daily_metrics_synced_until = date.today() - timedelta(days=1)
+    account.daily_metrics_synced_since = None
+    db.commit()
+    _central_token(db, tenant_a.org)
+
+    monkeypatch.setattr(meta_api, "get_daily_campaign_data_with_fallback", _fake_data([], []))
+
+    asyncio.run(daily_sync.sync_account(account.id))
+
+    db.refresh(account)
+    assert account.daily_metrics_synced_since == date.today() - timedelta(days=daily_sync.BACKFILL_DAYS)
 
 
 def test_sincronizar_dos_veces_actualiza_en_vez_de_duplicar(monkeypatch, tenant_a, factory, db):

@@ -93,6 +93,13 @@ async def sync_account(account_id: int) -> bool:
             since = today - timedelta(days=BACKFILL_DAYS)
         else:
             since = min(account.daily_metrics_synced_until - timedelta(days=OVERLAP_DAYS), today)
+        # El límite inferior de cobertura se fija UNA sola vez y nunca se
+        # mueve — ver el comentario de AdAccount.daily_metrics_synced_since.
+        # Una cuenta sincronizada antes de que existiera esta columna
+        # (migración 0010) la recibe recién ahora: como esta característica
+        # completa lleva desplegada apenas unas horas, su backfill real fue
+        # necesariamente con el mismo BACKFILL_DAYS de hoy.
+        synced_since = account.daily_metrics_synced_since or (today - timedelta(days=BACKFILL_DAYS))
         meta_ad_account_id = account.meta_ad_account_id
     finally:
         db.close()
@@ -143,6 +150,7 @@ async def sync_account(account_id: int) -> bool:
         acc = db.get(AdAccount, account_id)
         if acc is not None:
             acc.daily_metrics_synced_until = today
+            acc.daily_metrics_synced_since = synced_since
         db.commit()
     finally:
         db.close()

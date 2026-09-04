@@ -14,8 +14,9 @@ from app.models import CampaignDailyMetric, SyncedCampaign
 from app.services import meta_api
 
 
-def _marcar_sincronizada(db, account, hasta=None):
+def _marcar_sincronizada(db, account, hasta=None, desde=None):
     account.daily_metrics_synced_until = hasta or date.today()
+    account.daily_metrics_synced_since = desde or date(2020, 1, 1)
     db.commit()
 
 
@@ -169,6 +170,37 @@ def test_cuenta_sin_sincronizar_sigue_el_camino_viejo(monkeypatch, client, login
 
     r = client.post("/reports/summary", json={
         "ad_account_id": account.id, "date_from": "2026-08-01", "date_to": "2026-08-31",
+        "currency": "USD",
+    })
+    assert r.status_code == 200
+    assert r.json()["total_spend"] == 42.0
+
+
+def test_rango_anterior_al_backfill_cae_al_camino_viejo(monkeypatch, client, login, tenant_a, factory, db):
+    """Una cuenta sincronizada, pero pidiendo un período ANTERIOR a
+    daily_metrics_synced_since (ej. navegando muchos meses atrás en
+    Resumen): sumar de las tablas locales ahí devolvería "$0" en silencio
+    -- debe caer al camino viejo (Meta en vivo) para ESA consulta puntual,
+    aunque la cuenta sí esté sincronizada para fechas más recientes."""
+    login(tenant_a.owner)
+    account = factory.ad_account(tenant_a.client)
+    account.native_currency = "USD"
+    _marcar_sincronizada(db, account, desde=date(2026, 6, 1))
+    _campania(db, account, "1")
+    # Si el camino local se usara por error, vería esta fila y devolvería
+    # 999 en vez de ir a buscar el gasto real a Meta.
+    _metrica(db, account, "1", date(2026, 1, 15), spend=999.0)
+
+    monkeypatch.setattr(reports_routes, "resolve_tokens", lambda current, db: (["token"], None))
+
+    async def fake_get_account_data_with_fallback(*args, **kwargs):
+        return {"campaigns": [{"id": "1", "name": "x", "objective": "REACH", "status": "ACTIVE",
+                              "spend": 42.0, "insights": {}, "ads": []}], "total_spend": 42.0}
+
+    monkeypatch.setattr(meta_api, "get_account_data_with_fallback", fake_get_account_data_with_fallback)
+
+    r = client.post("/reports/summary", json={
+        "ad_account_id": account.id, "date_from": "2026-01-01", "date_to": "2026-01-31",
         "currency": "USD",
     })
     assert r.status_code == 200

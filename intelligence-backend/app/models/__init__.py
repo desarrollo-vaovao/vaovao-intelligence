@@ -162,6 +162,14 @@ class AdAccount(Base):
     # todavía necesita el camino viejo (una consulta en vivo a Meta) mientras
     # llega la primera sincronización.
     daily_metrics_synced_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Día más antiguo cubierto por esa sincronización — se fija UNA sola vez
+    # en la primera sincronización (hoy - daily_sync.BACKFILL_DAYS) y nunca
+    # se mueve después. Sin esto, pedir un mes anterior al backfill (ej.
+    # navegando muchos meses atrás en Resumen) contestaría "$0" en silencio
+    # en vez de ir a buscarlo a Meta: /reports/summary y /reports/campaigns
+    # solo usan la base de datos cuando date_from cae DENTRO de esta
+    # ventana; si no, caen al camino viejo para ESA consulta puntual.
+    daily_metrics_synced_since: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Correos que reciben el reporte de esta cuenta (cliente + internos de VaoVao)
     recipient_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

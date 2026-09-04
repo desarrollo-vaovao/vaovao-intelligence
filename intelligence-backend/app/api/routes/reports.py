@@ -533,14 +533,19 @@ async def report_summary(
 
     currency_value = data.currency.value
 
-    # Camino rápido: la cuenta ya se sincronizó al menos una vez (ver
-    # app/services/daily_sync.py) — el gasto por día ya está guardado
-    # localmente y las fechas son solo un filtro SQL, sin tocar Meta para
-    # nada. Esto reemplaza por completo el camino de abajo (caché +
-    # consulta en vivo) para cualquier cuenta ya sincronizada; ese camino
-    # viejo se queda solo como respaldo mientras una cuenta nueva espera su
-    # primera sincronización (hasta DAILY_METRICS_SYNC_INTERVAL_MINUTES).
-    if account.daily_metrics_synced_until is not None:
+    # Camino rápido: la cuenta ya se sincronizó (ver app/services/
+    # daily_sync.py) Y el rango pedido cae DENTRO de lo que cubre esa
+    # sincronización — el gasto por día ya está guardado localmente y las
+    # fechas son solo un filtro SQL, sin tocar Meta para nada. Un
+    # date_from anterior a daily_metrics_synced_since (ej. alguien
+    # navegando muchos meses atrás en Resumen) queda FUERA del backfill:
+    # sumar de la base de datos ahí devolvería "$0" en silencio en vez del
+    # gasto real, así que esa consulta puntual cae al camino de abajo.
+    if (
+        account.daily_metrics_synced_until is not None
+        and account.daily_metrics_synced_since is not None
+        and data.date_from >= account.daily_metrics_synced_since
+    ):
         org = db.get(Organization, current.org_id)
         raw_result = _summary_from_local_data(db, account, org, data.date_from, data.date_to, currency_value)
         return _apply_summary_overrides(raw_result, data)
