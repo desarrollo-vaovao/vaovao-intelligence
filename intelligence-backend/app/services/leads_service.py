@@ -367,6 +367,9 @@ def _refresh_from_meta(
     if payload.campaign_name is not None and payload.campaign_name != lead.campaign_name:
         lead.campaign_name = payload.campaign_name
         changed = True
+    if payload.campaign_id is not None and payload.campaign_id != lead.campaign_id:
+        lead.campaign_id = payload.campaign_id
+        changed = True
 
     if changed:
         try:
@@ -387,6 +390,7 @@ def _create_lead_with_audit(
     form_data: dict | None,
     form_id: str | None,
     campaign_name: str | None,
+    campaign_id: str | None = None,
     status: str = "nuevo",
     received_at: datetime | None = None,
     resolve_orphan: OrphanLead | None = None,
@@ -423,6 +427,7 @@ def _create_lead_with_audit(
             form_data=form_data,
             form_id=form_id,
             campaign_name=campaign_name,
+            campaign_id=campaign_id,
             status=status,
             received_at=received_at,
             commit=False,
@@ -486,6 +491,7 @@ def _store_orphan(db: Session, payload: LeadSyncPayload) -> OrphanLead:
             form_data=payload.form_data,
             form_id=payload.form_id,
             campaign_name=payload.campaign_name,
+            campaign_id=payload.campaign_id,
         )
     except IntegrityError:
         # Dos entregas del mismo huérfano que pasaron el SELECT a la vez.
@@ -556,6 +562,7 @@ def ingest_lead(db: Session, payload: LeadSyncPayload) -> IngestResult:
             form_data=payload.form_data,
             form_id=payload.form_id,
             campaign_name=payload.campaign_name,
+            campaign_id=payload.campaign_id,
             status=_raw(payload.status),
             resolve_orphan=_pending_orphan(db, payload.leadgen_id),
         )
@@ -673,6 +680,7 @@ def reconcile_orphans(db: Session, page_id: str, *, org_id: int) -> int:
                 form_data=dict(orphan.form_data or {}),
                 form_id=orphan.form_id,
                 campaign_name=orphan.campaign_name,
+                campaign_id=orphan.campaign_id,
                 # El lead llegó cuando llegó, no cuando alguien configuró la
                 # página: si se pusiera `now`, un lead de hace tres días
                 # aparecería arriba en la bandeja como si fuera reciente.

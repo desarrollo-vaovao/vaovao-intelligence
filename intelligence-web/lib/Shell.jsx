@@ -102,7 +102,7 @@ const LABELS = {
 export default function Shell({ children }) {
   const { user, loading, logout } = useAuth();
   const clientCtx = useClient() || {};
-  const { client, clients, setClient, loading: clientsLoading } = clientCtx;
+  const { account, accounts, setAccount, loading: clientsLoading } = clientCtx;
   const pathname = usePathname();
   const router = useRouter();
 
@@ -158,18 +158,29 @@ export default function Shell({ children }) {
         </div>
 
         <div className="sidebar-switcher" ref={switcherRef}>
-          <button type="button" className="switcher-btn" onClick={openSwitcher} title={client?.name || "Sin clientes"}>
-            <span className="switcher-avatar">{client?.name?.[0]?.toUpperCase() || "–"}</span>
-            <span className="switcher-name">{clientsLoading ? "Cargando…" : client?.name || "Sin clientes"}</span>
+          <button type="button" className="switcher-btn" onClick={openSwitcher} title={account?.displayName || "Sin activos"}>
+            <span className="switcher-avatar">{account?.displayName?.[0]?.toUpperCase() || "–"}</span>
+            <span className="switcher-name">{clientsLoading ? "Cargando…" : account?.displayName || "Sin activos"}</span>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`switcher-caret${switcherOpen ? " open" : ""}`}><path d="m6 9 6 6 6-6"></path></svg>
           </button>
           {switcherOpen && (
             <div className="switcher-menu" style={{ position: "fixed", top: switcherPos.top, left: switcherPos.left }}>
-              {(clients || []).map((c) => (
-                <button type="button" key={c.id} className={`switcher-item${client?.id === c.id ? " active" : ""}`} onClick={() => { setClient(c); setSwitcherOpen(false); }}>
+              {/* Cada ACTIVO comercial es su propia entrada, no el cliente:
+                  un cliente con varias cuentas (ej. varias estaciones) ya no
+                  mezcla su Resumen/Reportes/Leads bajo un solo selector. Si
+                  el cliente tiene un solo activo, se sigue viendo por su
+                  propio nombre (displayName cae a c.name en ese caso) — el
+                  subtítulo con el cliente solo aparece cuando hace falta
+                  para distinguir entre varios activos del mismo cliente. */}
+              {(accounts || []).map((a) => (
+                <button type="button" key={a.id} className={`switcher-item${account?.id === a.id ? " active" : ""}`} onClick={() => { setAccount(a); setSwitcherOpen(false); }}>
                   <span className="dot"></span>
-                  <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</span>
-                  <small>{c.ad_accounts?.length || 0}</small>
+                  <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{a.displayName}</span>
+                    {a.displayName !== a.client.name && (
+                      <small style={{ color: "var(--muted)" }}>{a.client.name}</small>
+                    )}
+                  </span>
                 </button>
               ))}
               <Link href="/clientes" className="switcher-new" onClick={() => setSwitcherOpen(false)}>+ Nuevo cliente</Link>

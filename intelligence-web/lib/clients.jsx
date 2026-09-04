@@ -4,30 +4,52 @@ import { api } from "./api";
 import { useAuth } from "./auth";
 
 const ClientCtx = createContext(null);
-const STORAGE_KEY = "vv_active_client";
+const STORAGE_KEY = "vv_active_account";
+
+// Aplana clients -> activos comerciales (cuentas publicitarias): un
+// cliente con un solo activo se sigue viendo por su propio nombre (nada
+// cambia en el caso normal), pero uno con VARIOS activos (varias
+// estaciones/cuentas, ej. OLR) pasa a mostrar cada activo como su propia
+// entrada navegable. Antes, Resumen y Leads se quedaban con "el primer
+// activo del cliente" o mezclaban los datos de todos bajo un mismo
+// cliente — con esto cada activo es su propia unidad, sin ambigüedad.
+function flattenAccounts(clients) {
+  const out = [];
+  for (const c of clients || []) {
+    const accs = c.ad_accounts || [];
+    for (const a of accs) {
+      out.push({ ...a, displayName: accs.length > 1 ? a.label : c.name, client: c });
+    }
+  }
+  return out;
+}
 
 export function ClientProvider({ children }) {
   const { user } = useAuth();
   const [clients, setClients] = useState(null);
-  const [client, setClientState] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [account, setAccountState] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Restaura el cliente guardado en localStorage si sigue en la lista,
-  // o cae al primero de la lista (o null si está vacía). Compartido entre
-  // el fetch inicial y refresh(), para que ambos manejen igual el caso de
-  // un cliente activo que ya no existe (p.ej. fue eliminado).
+  // Restaura el activo guardado en localStorage si sigue en la lista, o
+  // cae al primero (o null si está vacía). Compartido entre el fetch
+  // inicial y refresh(), para que ambos manejen igual el caso de un
+  // activo que ya no existe (p.ej. fue eliminado).
   const restoreOrFallback = useCallback((list) => {
+    const flat = flattenAccounts(list);
     const savedId = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-    const restored = list.find((c) => String(c.id) === savedId);
-    const next = restored || list[0] || null;
-    setClientState(next);
+    const restored = flat.find((a) => String(a.id) === savedId);
+    const next = restored || flat[0] || null;
+    setAccounts(flat);
+    setAccountState(next);
     return next;
   }, []);
 
   useEffect(() => {
     if (!user) {
       setClients(null);
-      setClientState(null);
+      setAccounts([]);
+      setAccountState(null);
       setLoading(false);
       return;
     }
@@ -40,7 +62,7 @@ export function ClientProvider({ children }) {
         restoreOrFallback(list);
       })
       .catch(() => {
-        if (!cancelled) { setClients([]); setClientState(null); }
+        if (!cancelled) { setClients([]); setAccounts([]); setAccountState(null); }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -51,24 +73,25 @@ export function ClientProvider({ children }) {
     try {
       const list = await api.listClients();
       setClients(list);
-      const currentId = client ? String(client.id) : null;
-      if (currentId && list.some((c) => String(c.id) === currentId)) {
-        // El cliente activo sigue existiendo: mantenlo (con datos frescos).
-        const fresh = list.find((c) => String(c.id) === currentId);
-        setClientState(fresh);
+      const flat = flattenAccounts(list);
+      const currentId = account ? String(account.id) : null;
+      if (currentId && flat.some((a) => String(a.id) === currentId)) {
+        // El activo sigue existiendo: mantenlo (con datos frescos).
+        setAccounts(flat);
+        setAccountState(flat.find((a) => String(a.id) === currentId));
       } else {
-        // El cliente activo ya no existe (p.ej. fue eliminado): cae al
-        // primero de la lista, o null si quedó vacía.
+        // El activo ya no existe (p.ej. se eliminó): cae al primero de la
+        // lista, o null si quedó vacía.
         restoreOrFallback(list);
       }
       return list;
     } catch {
       return null;
     }
-  }, [user, client, restoreOrFallback]);
+  }, [user, account, restoreOrFallback]);
 
-  const setClient = useCallback((next) => {
-    setClientState(next);
+  const setAccount = useCallback((next) => {
+    setAccountState(next);
     if (typeof window !== "undefined") {
       if (next) localStorage.setItem(STORAGE_KEY, String(next.id));
       else localStorage.removeItem(STORAGE_KEY);
@@ -76,7 +99,22 @@ export function ClientProvider({ children }) {
   }, []);
 
   return (
-    <ClientCtx.Provider value={{ client, clients, setClient, loading, refresh }}>
+    <ClientCtx.Provider
+      value={{
+        // `client`: el CLIENTE dueño del activo activo — sigue existiendo
+        // para lo poco que de verdad solo necesita datos de cliente (ej.
+        // Ajustes mostrando en qué moneda reporta). La navegación real
+        // (Resumen, Reportes, Leads) usa `account`/`accounts` de aquí en
+        // adelante, nunca `client`.
+        client: account?.client || null,
+        clients,
+        account,
+        accounts,
+        setAccount,
+        loading,
+        refresh,
+      }}
+    >
       {children}
     </ClientCtx.Provider>
   );

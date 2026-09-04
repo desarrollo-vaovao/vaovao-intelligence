@@ -83,6 +83,7 @@ class LeadResponse(LeadListItem):
     """Detalle completo de un lead: todo lo de LeadListItem + su bitácora."""
     form_id: str | None = None
     campaign_name: str | None = None
+    campaign_id: str | None = None
     updated_at: datetime
     audit_log: list[AuditEntry] | None = None
 
@@ -130,6 +131,7 @@ class LeadSyncPayload(BaseModel):
     leadgen_id: str = Field(min_length=1, max_length=64)
     page_id: str = Field(min_length=1, max_length=64)
     form_id: str | None = Field(default=None, max_length=64)
+    campaign_id: str | None = Field(default=None, max_length=64)
     campaign_name: str | None = Field(default=None, max_length=255)
     form_data: dict = Field(default_factory=dict)
     status: LeadStatus = LeadStatus.nuevo

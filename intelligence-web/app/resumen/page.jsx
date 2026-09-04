@@ -53,7 +53,7 @@ function flattenCampaigns(summary) {
 }
 
 export default function ResumenPage() {
-  const { client, loading: clientLoading } = useClient() || {};
+  const { account, loading: accountsLoading } = useClient() || {};
   const { user } = useAuth() || {};
   const exchangeRate = useExchangeRate();
 
@@ -91,12 +91,11 @@ export default function ResumenPage() {
     }
   }, [user]);
 
-  // El backend reporta por activo comercial (ad_account_id), no por
-  // cliente — ver el mismo ajuste ya hecho en reportes/page.jsx. Un
-  // cliente `single` tiene una sola cuenta; se usa esa. Un `multi_station`
-  // puede tener varias: por ahora se resume solo con la primera, ya que
-  // esta pantalla no tiene selector de activo (a diferencia de Reportes).
-  const accountId = client?.ad_accounts?.[0]?.id ?? null;
+  // El switcher de arriba ya elige un ACTIVO comercial puntual (ver
+  // lib/clients.jsx) — un cliente con varias cuentas (ej. varias
+  // estaciones) ya no se resume solo con la primera ni mezcla las demás:
+  // cada activo es su propia entrada en el switcher.
+  const accountId = account?.id ?? null;
 
   // `summary` solo se reemplaza por el de la CACHÉ (nunca por null) cuando
   // cambia el activo comercial — así, si ya se consultó antes en este
@@ -116,7 +115,7 @@ export default function ResumenPage() {
 
   const prevAccountId = useRef(null);
   useEffect(() => {
-    if (!client || !dateFrom || !dateTo || !accountId) { setSummary(null); return; }
+    if (!accountId || !dateFrom || !dateTo) { setSummary(null); return; }
     let cancelled = false;
 
     if (prevAccountId.current !== accountId) {
@@ -153,7 +152,7 @@ export default function ResumenPage() {
     fetchSummary(false);
     const intervalId = setInterval(() => fetchSummary(true), RESUMEN_POLL_MS);
     return () => { cancelled = true; clearInterval(intervalId); };
-  }, [client, accountId, dateFrom, dateTo, budget, currency]);
+  }, [accountId, dateFrom, dateTo, budget, currency]);
 
   function onBudgetChange(v) {
     setBudget(v);
@@ -189,30 +188,17 @@ export default function ResumenPage() {
   // vez de que las campañas aparezcan y desaparezcan según la fecha.
   const campaigns = flattenCampaigns(summary);
 
-  if (clientLoading) {
+  if (accountsLoading) {
     return <Shell><div className="empty"><h3>Cargando…</h3></div></Shell>;
   }
 
-  if (!client) {
+  if (!account) {
     return (
       <Shell>
         <div className="page-head"><div><h1>Resumen</h1></div></div>
         <div className="empty">
-          <h3>Sin cliente seleccionado</h3>
-          <p>Creá un cliente para ver su resumen de gasto.</p>
-          <Link href="/clientes" className="btn btn-primary" style={{ marginTop: 14 }}>Ir a Clientes</Link>
-        </div>
-      </Shell>
-    );
-  }
-
-  if (!accountId) {
-    return (
-      <Shell>
-        <div className="page-head"><div><h1>Resumen</h1></div></div>
-        <div className="empty">
-          <h3>{client.name} no tiene una cuenta de Meta conectada</h3>
-          <p>Agrega un activo comercial en Clientes para ver su resumen de gasto.</p>
+          <h3>Sin activo comercial seleccionado</h3>
+          <p>Agrega un cliente con un activo comercial (cuenta de Meta) para ver su resumen de gasto.</p>
           <Link href="/clientes" className="btn btn-primary" style={{ marginTop: 14 }}>Ir a Clientes</Link>
         </div>
       </Shell>
@@ -224,7 +210,7 @@ export default function ResumenPage() {
       <div className="page-head">
         <div>
           <h1>Resumen</h1>
-          <p>Gasto y presupuesto de {client.name} en el período.</p>
+          <p>Gasto y presupuesto de {account.displayName} en el período.</p>
         </div>
       </div>
 

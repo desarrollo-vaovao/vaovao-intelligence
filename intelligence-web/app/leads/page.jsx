@@ -85,7 +85,10 @@ function SearchIcon() {
 // ── Page ─────────────────────────────────────────────────────────
 export default function LeadsPage() {
   const clientCtx = useClient() || {};
-  const { client } = clientCtx;
+  // Cada activo comercial es su propia bandeja de leads (ver
+  // lib/clients.jsx) — un cliente con varias cuentas ya no mezcla los
+  // leads de todas bajo un mismo listado.
+  const { account } = clientCtx;
   const { user } = useAuth();
 
   const [leads, setLeads] = useState(null);
@@ -102,10 +105,10 @@ export default function LeadsPage() {
   const searchTimer = useRef(null);
 
   const load = useCallback(async () => {
-    if (!client) return;
+    if (!account) return;
     setErr("");
     try {
-      const params = { page, size: PAGE_SIZE, client_id: client.id };
+      const params = { page, size: PAGE_SIZE, account_id: account.id };
       if (appliedSearch) params.search = appliedSearch;
       const res = await api.listLeads(params);
       setLeads(res.items);
@@ -113,7 +116,7 @@ export default function LeadsPage() {
     } catch (e) {
       setErr(e.message);
     }
-  }, [client, page, appliedSearch]);
+  }, [account, page, appliedSearch]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -124,7 +127,7 @@ export default function LeadsPage() {
   useEffect(() => {
     setPage(1);
     setLeads(null);
-  }, [client]);
+  }, [account]);
 
   function onSearchChange(val) {
     setSearch(val);
@@ -136,11 +139,11 @@ export default function LeadsPage() {
   }
 
   async function exportCsv() {
-    if (!client) return;
+    if (!account) return;
     setExporting(true);
     setErr("");
     try {
-      await api.exportLeadsCsv({ client_id: client.id });
+      await api.exportLeadsCsv({ account_id: account.id });
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -157,7 +160,7 @@ export default function LeadsPage() {
           <h1>Leads</h1>
           <p>
             Contactos capturados desde los formularios de Meta
-            {client ? ` de ${client.name}` : ""}.
+            {account ? ` de ${account.displayName}` : ""}.
           </p>
         </div>
         <div className="row">
@@ -187,7 +190,7 @@ export default function LeadsPage() {
               Lista
             </button>
           </div>
-          <button className="btn btn-ghost" onClick={exportCsv} disabled={exporting || !client}>
+          <button className="btn btn-ghost" onClick={exportCsv} disabled={exporting || !account}>
             <DownloadIcon />
             {exporting ? "Exportando…" : "Exportar CSV"}
           </button>
@@ -201,7 +204,7 @@ export default function LeadsPage() {
         <div className="metric-card">
           <span className="metric-label">Leads del período</span>
           <span className="metric-value">{leads === null ? "—" : total}</span>
-          <span className="metric-sub">{client?.name || ""}</span>
+          <span className="metric-sub">{account?.displayName || ""}</span>
         </div>
         <div className="metric-card">
           <span className="metric-label">Costo por lead</span>
@@ -226,7 +229,7 @@ export default function LeadsPage() {
       ) : leads.length === 0 ? (
         <div className="card empty">
           <h3>Sin leads</h3>
-          <p>Aún no hay leads capturados{client ? ` para ${client.name}` : ""}.</p>
+          <p>Aún no hay leads capturados{account ? ` para ${account.displayName}` : ""}.</p>
         </div>
       ) : view === "pipeline" ? (
         <KanbanBoard leads={leads} onSelect={setDetailLead} />

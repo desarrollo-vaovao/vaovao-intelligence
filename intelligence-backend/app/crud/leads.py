@@ -29,7 +29,7 @@ from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models import Lead, LeadAudit, OrphanLead, User, UserRole
+from app.models import AdAccount, Lead, LeadAudit, OrphanLead, SyncedCampaign, User, UserRole
 
 # Tope duro de tamaño de página: nadie pide 100.000 leads de un jalón.
 MAX_PAGE_SIZE = 500
@@ -192,9 +192,40 @@ def _visibility_conditions(user: User) -> list[ColumnElement[bool]]:
     return conditions
 
 
+def _account_visibility_condition(account: AdAccount) -> ColumnElement[bool]:
+    """
+    Un lead pertenece a ESTE activo comercial si su campaña ya se
+    sincronizó como de esta cuenta (ver SyncedCampaign / daily_sync.py).
+    Uno cuya campaña TODAVÍA no se resolvió a NINGÚN activo del mismo
+    cliente —una campaña nueva que aún no se sincronizó (hasta
+    DAILY_METRICS_SYNC_INTERVAL_MINUTES), o un formulario que no viene de
+    un anuncio pautado— aparece en TODOS los activos del cliente: mejor
+    ver un lead real de más un rato que perderlo de vista mientras la
+    sincronización lo alcanza.
+
+    Los ids de campaña de Meta son únicos globalmente, así que cruzar por
+    `campaign_id` sin más contexto no arriesga mezclar cuentas de otro
+    cliente (ni de otra organización).
+    """
+    sibling_accounts = select(AdAccount.id).where(AdAccount.client_id == account.client_id)
+    resolved_to_this_account = select(SyncedCampaign.campaign_id).where(
+        SyncedCampaign.account_id == account.id
+    )
+    resolved_to_any_sibling = select(SyncedCampaign.campaign_id).where(
+        SyncedCampaign.account_id.in_(sibling_accounts)
+    )
+    return or_(
+        Lead.campaign_id.is_(None),
+        Lead.campaign_id.in_(resolved_to_this_account),
+        Lead.campaign_id.not_in(resolved_to_any_sibling),
+    )
+
+
 def _lead_conditions(
+    db: Session,
     user: User,
     *,
+    account_id: int | None = None,
     client_id: int | None = None,
     status: str | None = None,
     search: str | None = None,
@@ -204,10 +235,25 @@ def _lead_conditions(
     Tanto el `COUNT(*)` como la página de resultados salen de aquí: si el
     conteo y la lista usaran cadenas de filtros distintas, el total y los
     items se contradirían, y el bug sería invisible hasta producción.
+
+    `account_id` (filtrar por ACTIVO comercial, no por cliente) es el caso
+    normal desde que un cliente puede tener varios activos y ya no se
+    quieren mezclar sus leads — ver `_account_visibility_condition`. El
+    router ya validó antes que la cuenta exista y sea de esta
+    organización (ver `_resolve_account_filter`); si de todos modos
+    llegara un id inválido, la condición imposible de abajo devuelve cero
+    filas en vez de reventar.
     """
     conditions = _visibility_conditions(user)
 
-    if client_id is not None:
+    if account_id is not None:
+        account = db.get(AdAccount, account_id)
+        if account is None:
+            conditions.append(Lead.id.is_(None))
+        else:
+            conditions.append(Lead.client_id == account.client_id)
+            conditions.append(_account_visibility_condition(account))
+    elif client_id is not None:
         conditions.append(Lead.client_id == client_id)
 
     if status is not None:
@@ -231,6 +277,7 @@ def create_lead(
     form_data: dict | None = None,
     form_id: str | None = None,
     campaign_name: str | None = None,
+    campaign_id: str | None = None,
     status: str = "nuevo",
     assigned_to_id: int | None = None,
     notes: str | None = None,
@@ -249,6 +296,7 @@ def create_lead(
         leadgen_id=leadgen_id,
         form_id=form_id,
         campaign_name=campaign_name,
+        campaign_id=campaign_id,
         form_data=form_data if form_data is not None else {},
         status=_enum_value(status),
         assigned_to_id=assigned_to_id,
@@ -311,6 +359,7 @@ def list_leads_for_user(
     db: Session,
     user: User,
     *,
+    account_id: int | None = None,
     client_id: int | None = None,
     status: str | None = None,
     search: str | None = None,
@@ -324,12 +373,18 @@ def list_leads_for_user(
     es sólo la página pedida. Orden: `received_at` descendente (lo más
     nuevo arriba), con desempate por `id` para que la paginación sea
     estable cuando dos leads comparten timestamp.
+
+    `account_id` filtra por activo comercial (ver `_account_visibility_condition`);
+    `client_id` sigue existiendo para vistas que de verdad quieran TODOS los
+    leads de un cliente sin importar el activo (ej. un futuro reporte
+    consolidado) — pasar ambos no tiene sentido, `account_id` gana si
+    llegan los dos.
     """
     page = max(1, int(page))
     size = max(1, min(int(size), MAX_PAGE_SIZE))
 
     conditions = _lead_conditions(
-        user, client_id=client_id, status=status, search=search
+        db, user, account_id=account_id, client_id=client_id, status=status, search=search
     )
 
     total = db.scalar(select(func.count()).select_from(Lead).where(*conditions)) or 0
@@ -464,6 +519,7 @@ def create_orphan_lead(
     form_data: dict | None = None,
     form_id: str | None = None,
     campaign_name: str | None = None,
+    campaign_id: str | None = None,
     commit: bool = True,
 ) -> OrphanLead:
     """Guarda un lead que no se pudo atribuir a ningún cliente.
@@ -479,6 +535,7 @@ def create_orphan_lead(
         page_id=page_id,
         form_id=form_id,
         campaign_name=campaign_name,
+        campaign_id=campaign_id,
         form_data=form_data if form_data is not None else {},
     )
     db.add(orphan)

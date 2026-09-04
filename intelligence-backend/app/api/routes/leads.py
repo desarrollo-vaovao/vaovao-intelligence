@@ -70,7 +70,7 @@ from app.core.config import LEADS_SYNC_TOKEN_DEV_DEFAULT, settings
 from app.core.database import get_db
 from app.core.ratelimit import LIMITS, limiter
 from app.crud import leads as crud
-from app.models import Client, Lead, User, UserRole
+from app.models import AdAccount, Client, Lead, User, UserRole
 from app.schemas.leads import (
     AuditEntry,
     LeadListItem,
@@ -346,6 +346,7 @@ def sync_webhook(
 # real (que sí va al log del servidor).
 _LEAD_NOT_FOUND_DETAIL = "Lead no encontrado."
 _CLIENT_NOT_FOUND_DETAIL = "Cliente no encontrado"
+_ACCOUNT_NOT_FOUND_DETAIL = "Activo comercial no encontrado"
 _FORBIDDEN_DETAIL = "No tienes permisos para modificar este lead."
 _UPDATE_FAILED_DETAIL = (
     "Ocurrió un error inesperado actualizando el lead. No se guardó ningún "
@@ -405,6 +406,29 @@ def _resolve_client_filter(
     return client
 
 
+def _resolve_account_filter(
+    db: Session, current: User, account_id: int | None
+) -> AdAccount | None:
+    """Comprueba que el `account_id` del filtro sea de la organización del
+    usuario — mismo razonamiento que `_resolve_client_filter`: 404 en vez
+    de una lista vacía silenciosa cuando el activo no es tuyo.
+
+    Leads ahora se ve por ACTIVO COMERCIAL, no por cliente: un cliente con
+    varios activos (ej. varias estaciones) ya no mezcla sus leads en una
+    sola bandeja (ver crud/leads.py _account_visibility_condition).
+    """
+    if account_id is None:
+        return None
+    account = db.scalar(
+        select(AdAccount)
+        .join(Client, Client.id == AdAccount.client_id)
+        .where(AdAccount.id == account_id, Client.org_id == current.org_id)
+    )
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _ACCOUNT_NOT_FOUND_DETAIL)
+    return account
+
+
 # Los campos del detalle que SÍ salen del ORM. `audit_log` no está en la
 # lista porque no se puede sacar de ahí — ver `_detail_response`.
 _DETAIL_ORM_FIELDS = tuple(
@@ -449,7 +473,8 @@ def _collect_for_export(
     db: Session,
     current: User,
     *,
-    client_id: int | None,
+    account_id: int | None = None,
+    client_id: int | None = None,
     status_filter: LeadStatus | None,
     search: str | None,
 ) -> list[Lead]:
@@ -464,6 +489,7 @@ def _collect_for_export(
     total, items = crud.list_leads_for_user(
         db,
         current,
+        account_id=account_id,
         client_id=client_id,
         status=status_filter,
         search=search,
@@ -481,6 +507,7 @@ def _collect_for_export(
         _, more = crud.list_leads_for_user(
             db,
             current,
+            account_id=account_id,
             client_id=client_id,
             status=status_filter,
             search=search,
@@ -512,7 +539,10 @@ def list_leads(
         le=crud.MAX_PAGE_SIZE,
         description="Leads por página.",
     ),
-    client_id: int | None = Query(None, description="Filtra por cliente."),
+    account_id: int | None = Query(None, description="Filtra por activo comercial."),
+    client_id: int | None = Query(
+        None, description="Filtra por cliente (todos sus activos juntos)."
+    ),
     status_filter: LeadStatus | None = Query(
         None, alias="status", description="Filtra por etapa del pipeline."
     ),
@@ -542,11 +572,13 @@ def list_leads(
     detrás de un NAT lo comparte; 120/minuto deja trabajar a varias personas a
     la vez y aun así corta a un scraper que pagine la organización entera.
     """
+    _resolve_account_filter(db, current, account_id)
     _resolve_client_filter(db, current, client_id)
 
     total, items = crud.list_leads_for_user(
         db,
         current,
+        account_id=account_id,
         client_id=client_id,
         status=status_filter,
         search=search,
@@ -650,7 +682,10 @@ def leads_status(
 @limiter.limit(LIMITS["leads_export_csv"])
 def export_csv(
     request: Request,
-    client_id: int | None = Query(None, description="Filtra por cliente."),
+    account_id: int | None = Query(None, description="Filtra por activo comercial."),
+    client_id: int | None = Query(
+        None, description="Filtra por cliente (todos sus activos juntos)."
+    ),
     status_filter: LeadStatus | None = Query(
         None, alias="status", description="Filtra por etapa del pipeline."
     ),
@@ -684,13 +719,21 @@ def export_csv(
     acto deliberado que una persona hace unas pocas veces al día, no algo que
     se repita al navegar.
     """
+    account = _resolve_account_filter(db, current, account_id)
     client = _resolve_client_filter(db, current, client_id)
 
     leads = _collect_for_export(
-        db, current, client_id=client_id, status_filter=status_filter, search=search
+        db, current, account_id=account_id, client_id=client_id,
+        status_filter=status_filter, search=search,
     )
     body = export_leads_csv(leads)
-    filename = build_export_filename(client.name if client is not None else None)
+    if account is not None:
+        export_name = f"{account.client.name} {account.label}"
+    elif client is not None:
+        export_name = client.name
+    else:
+        export_name = None
+    filename = build_export_filename(export_name)
 
     logger.info(
         "Exportación de leads a CSV: user=%s org=%s filas=%s archivo=%s",

@@ -337,6 +337,16 @@ class Lead(Base):
     leadgen_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Id REAL de la campaña de Meta (no el nombre) — lo manda leads_traker
+    # desde el mismo fetch que ya trae campaign_name (ver LEAD_FIELDS en su
+    # meta.py). Con esto se puede saber a qué ACTIVO COMERCIAL pertenece un
+    # lead cruzando contra SyncedCampaign (ver app/services/daily_sync.py):
+    # un cliente con varios activos ya no mezcla los leads de todos —
+    # GET /leads filtra por activo, no por cliente (ver crud/leads.py
+    # _account_visibility_condition). None = Meta no lo mandó (formulario
+    # sin anuncio pautado) o la campaña ya no existe; ese lead se muestra en
+    # TODOS los activos del cliente en vez de perderse.
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     form_data: Mapped[dict] = mapped_column(JSON, default=dict)
     # Etapa del pipeline (las 5 columnas del Kanban, más el cierre negativo):
     #     nuevo → contactado → calificado → propuesta → ganado
@@ -408,6 +418,7 @@ class OrphanLead(Base):
     page_id: Mapped[str] = mapped_column(String(64), index=True)
     form_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     form_data: Mapped[dict] = mapped_column(JSON, default=dict)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     # Se llena cuando el huérfano ya fue convertido en Lead real.

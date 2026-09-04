@@ -28,23 +28,19 @@ const METRIC_CATALOG = [
 ];
 
 export default function ReportesPage() {
-  const { client } = useClient() || {};
+  // El switcher de arriba (ver lib/clients.jsx) ya elige un ACTIVO
+  // comercial puntual — un cliente con varias cuentas (ej. varias
+  // estaciones) ya tiene una entrada por activo ahí, así que esta pantalla
+  // no necesita su propio selector "de qué activo del cliente" como antes.
+  const { account } = useClient() || {};
+  const accountId = account?.id ?? null;
   const { user } = useAuth() || {};
   const exchangeRate = useExchangeRate();
 
-  // Los activos comerciales del CLIENTE ACTIVO únicamente (el que se elige
-  // en el sidebar) — nunca de toda la organización. La mayoría de clientes
-  // son `single` (un solo ad account); `multi_station` puede tener varios
-  // (una franquicia con una cuenta por país/estación), de ahí que siga
-  // haciendo falta un selector, pero acotado a este cliente.
-  const accounts = [...(client?.ad_accounts || [])].sort((a, b) =>
-    a.label.localeCompare(b.label, "es")
-  );
   const [status, setStatus] = useState(null);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
 
-  const [accountId, setAccountId] = useState("");
   const [reportType, setReportType] = useState("quincenal");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -89,17 +85,8 @@ export default function ReportesPage() {
   }, [user]);
 
   // Al cambiar el activo comercial, cargar los países disponibles
-  async function cambiarActivo(id) {
-    setAccountId(id);
-    setCountryCode("");
-    setCountries([]);
-    setCountriesError("");
-    if (!id) return;
-    await cargarPaises(id);
-  }
-
-  // Separado de cambiarActivo para que el botón "Reintentar" pueda volver
-  // a llamarlo sin resetear el activo ya seleccionado. Antes, un fallo acá
+  // Separado del efecto de abajo para que el botón "Reintentar" pueda
+  // volver a llamarlo sin resetear el país ya elegido. Antes, un fallo acá
   // (típicamente Meta: "User request limit reached") se tragaba en
   // silencio — countries quedaba en [] sin ningún aviso, así que el
   // selector se veía "atascado" en "Todos los países" sin explicar por
@@ -164,20 +151,15 @@ export default function ReportesPage() {
     setCampaignComments((prev) => ({ ...prev, [campaignId]: text }));
   }
 
-  // Al cambiar el CLIENTE activo (sidebar): sus cuentas son las únicas
-  // válidas para reportar, así que cualquier selección de un cliente
-  // anterior queda descartada. Si el cliente activo tiene una sola cuenta
-  // (el caso común, ClientType.single), se autoselecciona y el selector
-  // no le pide nada al usuario; con varias (multi_station) sigue haciendo
-  // falta elegir, pero solo entre las de este cliente.
+  // Al cambiar el ACTIVO comercial activo (switcher de arriba): su país
+  // seleccionado y su listado de países ya no aplican al activo nuevo.
   useEffect(() => {
-    if (accounts.length === 1) {
-      cambiarActivo(String(accounts[0].id));
-    } else {
-      cambiarActivo("");
-    }
+    setCountryCode("");
+    setCountries([]);
+    setCountriesError("");
+    if (accountId) cargarPaises(accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client?.id]);
+  }, [accountId]);
 
   // Si cambia el activo comercial, el período o el filtro de país después de
   // haber cargado el panel de personalización, la selección queda obsoleta
@@ -284,38 +266,19 @@ export default function ReportesPage() {
         {info && <div className="notice" style={{ marginBottom: 18 }}><div>{info}</div></div>}
 
         <div className="card" style={{ padding: 24 }}>
-          {accounts.length === 0 && (
-            <div className="field">
-              <label>Activo comercial</label>
-              <input
-                className="input"
-                value={client ? "Este cliente no tiene una cuenta de Meta conectada" : "Selecciona un cliente en el menú lateral"}
-                disabled
-                readOnly
-              />
-            </div>
-          )}
-
-          {accounts.length === 1 && (
-            <div className="field">
-              <label>Activo comercial</label>
-              <input className="input" value={accounts[0].label} disabled readOnly />
-            </div>
-          )}
-
-          {accounts.length > 1 && (
-            <div className="field">
-              <label>Activo comercial</label>
-              <select className="input" value={accountId} onChange={(e) => cambiarActivo(e.target.value)}>
-                <option value="">— Selecciona un activo comercial de {client.name} —</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* El activo comercial ya se elige en el switcher de arriba (ver
+              lib/clients.jsx) — un cliente con varias cuentas tiene una
+              entrada por activo ahí, así que esta pantalla ya no repite el
+              selector, solo confirma cuál está activo. */}
+          <div className="field">
+            <label>Activo comercial</label>
+            <input
+              className="input"
+              value={account ? account.displayName : "Selecciona un activo comercial en el menú lateral"}
+              disabled
+              readOnly
+            />
+          </div>
 
           {accountId && (
             <div className="field">
