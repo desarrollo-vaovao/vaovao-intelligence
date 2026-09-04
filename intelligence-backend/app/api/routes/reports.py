@@ -720,6 +720,54 @@ async def get_available_countries(
     return {"countries": result}
 
 
+def _campaigns_from_local_data(db: Session, account_id: int, date_from: date, date_to: date) -> list[dict]:
+    """
+    Igual que la parte de abajo (campañas con gasto/alcance real en el
+    período), pero sumando CampaignDailyMetric/SyncedCampaign en vez de
+    tocar Meta — ver _summary_from_local_data, el mismo patrón que ya usa
+    /reports/summary. Solo cubre el caso SIN filtro de país: un filtro por
+    país necesita el targeting de cada anuncio, que estas tablas no
+    guardan (son a nivel de campaña) — ver el llamador.
+    """
+    rows = db.execute(
+        select(
+            CampaignDailyMetric.campaign_id,
+            func.sum(CampaignDailyMetric.spend),
+            func.sum(CampaignDailyMetric.impressions),
+        )
+        .where(
+            CampaignDailyMetric.account_id == account_id,
+            CampaignDailyMetric.date >= date_from,
+            CampaignDailyMetric.date <= date_to,
+        )
+        .group_by(CampaignDailyMetric.campaign_id)
+        .having((func.sum(CampaignDailyMetric.spend) > 0) | (func.sum(CampaignDailyMetric.impressions) > 0))
+    ).all()
+    campaign_ids_con_datos = [cid for cid, _spend, _impressions in rows]
+    if not campaign_ids_con_datos:
+        return []
+
+    registry = {
+        row.campaign_id: row
+        for row in db.scalars(
+            select(SyncedCampaign).where(
+                SyncedCampaign.account_id == account_id,
+                SyncedCampaign.campaign_id.in_(campaign_ids_con_datos),
+            )
+        ).all()
+    }
+    return [
+        {
+            "id": cid,
+            "name": registry[cid].name,
+            "objective": registry[cid].objective,
+            "default_metrics": pdf_generator.default_metric_keys(registry[cid].objective),
+        }
+        for cid in campaign_ids_con_datos
+        if cid in registry
+    ]
+
+
 @router.get("/campaigns/{account_id}")
 async def get_report_campaigns(
     account_id: int,
@@ -734,6 +782,12 @@ async def get_report_campaigns(
     métricas que se mostraría automáticamente (`default_metrics`, claves de
     pdf_generator.METRIC_REGISTRY). Alimenta el panel "Personalizar métricas y
     observaciones" del formulario de Reportes.
+
+    Sin filtro de país y con la cuenta ya sincronizada (ver
+    app/services/daily_sync.py) para ese rango: se contesta sumando
+    CampaignDailyMetric/SyncedCampaign, sin tocar Meta (ver
+    _campaigns_from_local_data). Con filtro de país, o mientras la cuenta
+    espera su sincronización, sigue el camino de antes:
 
     Se guarda en report_campaigns_cache (migración 0007) por combinación
     exacta de (cuenta, date_from, date_to, país): un período ya cerrado no
@@ -756,6 +810,20 @@ async def get_report_campaigns(
             status.HTTP_400_BAD_REQUEST,
             "La fecha de inicio no puede ser posterior a la de fin.",
         )
+
+    # Camino rápido: sin filtro de país, y el rango pedido cae DENTRO de lo
+    # que ya cubre la sincronización en segundo plano (ver
+    # AdAccount.daily_metrics_synced_since y app/services/daily_sync.py) —
+    # se contesta sumando de la base de datos, sin tocar Meta ni
+    # report_campaigns_cache para nada. Un filtro de país sigue el camino
+    # de abajo: esas tablas no guardan targeting por anuncio.
+    if (
+        not country_code
+        and account.daily_metrics_synced_until is not None
+        and account.daily_metrics_synced_since is not None
+        and date_from >= account.daily_metrics_synced_since
+    ):
+        return {"campaigns": _campaigns_from_local_data(db, account_id, date_from, date_to)}
 
     country_key = country_code or ""
     cached = db.execute(
