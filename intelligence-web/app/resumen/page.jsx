@@ -124,8 +124,17 @@ export default function ResumenPage() {
       setSummary(loadCachedSummary(accountId));
     }
 
-    function fetchSummary() {
-      setBusy(true); setErr("");
+    // `silent`: el sondeo cada 5 min NO debe prender "Actualizando…" — el
+    // backend ya contesta desde su propia sincronización (ver
+    // app/services/daily_sync.py), así que esa vuelta es, en la práctica,
+    // instantánea y no cambia nada la inmensa mayoría de las veces. Mostrar
+    // un aviso de carga por una consulta de fondo que la persona ni pidió
+    // se sentía como que la pantalla "no confiaba" en el dato que ya tenía
+    // enfrente. El aviso se queda solo para cuando la persona SÍ acaba de
+    // cambiar algo (mes, moneda, presupuesto).
+    function fetchSummary(silent) {
+      if (!silent) setBusy(true);
+      setErr("");
       api.reportSummary({
         ad_account_id: accountId,
         date_from: dateFrom,
@@ -137,12 +146,12 @@ export default function ResumenPage() {
         setSummary(data);
         saveCachedSummary(accountId, data);
       })
-        .catch((e) => { if (!cancelled) setErr(e.message); })
+        .catch((e) => { if (!cancelled && !silent) setErr(e.message); })
         .finally(() => { if (!cancelled) setBusy(false); });
     }
 
-    fetchSummary();
-    const intervalId = setInterval(fetchSummary, RESUMEN_POLL_MS);
+    fetchSummary(false);
+    const intervalId = setInterval(() => fetchSummary(true), RESUMEN_POLL_MS);
     return () => { cancelled = true; clearInterval(intervalId); };
   }, [client, accountId, dateFrom, dateTo, budget, currency]);
 
