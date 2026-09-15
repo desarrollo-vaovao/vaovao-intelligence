@@ -11,17 +11,21 @@ Usa, en orden de preferencia:
   1. El Facebook conectado del usuario ("por usuario", recomendado)
   2. Los tokens centrales de la organización (uno por portafolio comercial)
 
+Un reporte generado NO se tira al terminar: queda guardado en
+generated_reports (ver migración 0012) y se puede volver a descargar desde
+el historial sin pagar otra generación completa.
+
 Endpoints:
 - GET  /reports/status              → si hay conexión con Meta y si la generación está lista
 - POST /reports/generate            → valida y arranca la generación, devuelve job_id
 - GET  /reports/jobs/{job_id}       → estado del job (processing/done/error)
 - GET  /reports/jobs/{job_id}/pdf   → descarga el PDF una vez que el job está "done"
+- GET  /reports/history/{account_id}→ reportes ya generados de un activo, para redescargar
 - POST /reports/check-access        → verifica en vivo si podemos leer una cuenta
 """
 import asyncio
 import logging
 import os
-import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -35,6 +39,7 @@ from app.core.database import get_db, SessionLocal
 from app.models import (
     User, Organization, Client, AdAccount, FacebookConnection, MetaCentralToken,
     ReportCampaignsCache, ReportSummaryCache, SyncedCampaign, CampaignDailyMetric,
+    GeneratedReport,
 )
 from app.schemas import (
     ReportStatus,
@@ -43,6 +48,7 @@ from app.schemas import (
     CheckAccessResult,
     ReportJobCreated,
     ReportJobStatus,
+    ReportHistoryEntry,
     ATTRIBUTION_WINDOWS,
 )
 from app.services import meta_api, pdf_generator, report_builder
@@ -80,13 +86,14 @@ _SUMMARY_CACHE_TTL = timedelta(minutes=float(os.getenv("REPORT_SUMMARY_CACHE_MIN
 # que entra gana, el resto simplemente sigue sirviendo la caché tal cual.
 _summary_refresh_in_flight: set[tuple] = set()
 
-# ── Jobs de generación en segundo plano ─────────────────────────
-# En memoria del proceso: alcanza para el tamaño de este equipo (un solo
-# servicio de Railway, sin múltiples workers). Si el proceso se reinicia
-# a mitad de un job, ese reporte se pierde y hay que regenerarlo — es un
-# costo aceptable frente a montar una cola real (Redis/Celery) para esto.
-_JOBS: dict[str, dict] = {}
-_JOB_TTL_SECONDS = 30 * 60
+# ── Jobs de generación e historial ──────────────────────────────
+# Un reporte generado se guarda en la base (ver models.GeneratedReport,
+# migración 0012): la MISMA fila es el estado del job mientras se genera y
+# la entrada del historial después. Antes esto era un diccionario en
+# memoria del proceso con 30 minutos de vida, así que un despliegue —o
+# simplemente media mañana— borraba todos los PDF ya generados y volver a
+# pedir el mismo reporte obligaba a rehacer el trabajo completo (traer todo
+# de Meta y volver a renderizar en Chromium).
 
 # Cuántos reportes completos (traer datos de Meta + armar el PDF) corren a
 # la vez como máximo. Sin este límite, si 50-100 personas generan reportes
@@ -96,12 +103,62 @@ _JOB_TTL_SECONDS = 30 * 60
 _GENERATION_CONCURRENCY = 6
 _generation_semaphore = asyncio.Semaphore(_GENERATION_CONCURRENCY)
 
+# Cuántos días se conservan los BYTES de un reporte. Pasado eso la fila
+# sigue en el historial (con downloadable=False) pero suelta el PDF: sin
+# esto la tabla crecería sin techo, porque un reporte con imágenes de
+# anuncios incrustadas pesa varios MB y nada los borraría nunca.
+_HISTORY_RETENTION_DAYS = int(os.getenv("REPORT_HISTORY_RETENTION_DAYS", "90"))
 
-def _cleanup_jobs() -> None:
-    cutoff = time.monotonic() - _JOB_TTL_SECONDS
-    stale = [jid for jid, j in _JOBS.items() if j["created_at"] < cutoff]
-    for jid in stale:
-        _JOBS.pop(jid, None)
+# Cuántas entradas devuelve el historial por activo comercial si no piden otra cosa.
+_HISTORY_DEFAULT_LIMIT = 20
+_HISTORY_MAX_LIMIT = 100
+
+
+def _purgar_reportes_vencidos(db: Session) -> None:
+    """
+    Suelta los bytes de los reportes de más de _HISTORY_RETENTION_DAYS,
+    conservando la fila.
+
+    Se conserva la fila a propósito: el historial debe seguir diciendo la
+    verdad sobre qué se generó y cuándo, aunque el archivo ya no esté. Solo
+    se apaga el botón de descargar (ver `downloadable` en el schema).
+
+    Corre al arrancar una generación nueva en vez de en un ciclo aparte: es
+    un UPDATE acotado por índice y así no hace falta otro proceso en
+    segundo plano solo para esto.
+    """
+    if _HISTORY_RETENTION_DAYS <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_HISTORY_RETENTION_DAYS)
+    db.execute(
+        update(GeneratedReport)
+        .where(GeneratedReport.created_at < cutoff, GeneratedReport.pdf.isnot(None))
+        .values(pdf=None)
+    )
+    db.commit()
+
+
+def _finalizar_job(job_id: str, **campos) -> None:
+    """
+    Escribe el resultado del job en su fila.
+
+    Abre su propia sesión: esto corre después de que la petición HTTP que
+    lo arrancó ya terminó, así que la sesión de esa petición hace rato que
+    FastAPI la cerró (mismo patrón que _refresh_summary_cache_background).
+    """
+    db = SessionLocal()
+    try:
+        db.execute(
+            update(GeneratedReport).where(GeneratedReport.job_id == job_id).values(**campos)
+        )
+        db.commit()
+    except Exception:
+        # Si ni siquiera se puede registrar el fallo, el job queda en
+        # "processing" y el frontend lo seguirá mostrando así. Es feo, pero
+        # tumbar la tarea de fondo con un traceback no lo arregla.
+        log.exception("No se pudo guardar el resultado del reporte (job %s)", job_id)
+    finally:
+        db.close()
 
 
 async def _run_report_job(
@@ -120,21 +177,26 @@ async def _run_report_job(
                 source_currency, exchange_rate, attribution_window,
                 campaign_metrics, campaign_comments, general_comment,
             )
-        _JOBS[job_id].update(status="done", pdf=pdf_bytes, filename=filename)
+        _finalizar_job(
+            job_id, status="done", pdf=pdf_bytes, filename=filename,
+            size_bytes=len(pdf_bytes), completed_at=datetime.now(timezone.utc),
+        )
     except ValueError as e:
-        _JOBS[job_id].update(status="error", error=str(e))
+        _finalizar_job(job_id, status="error", error=str(e),
+                       completed_at=datetime.now(timezone.utc))
     except meta_api.MetaApiError as e:
-        _JOBS[job_id].update(status="error", error=f"Meta: {e}")
+        _finalizar_job(job_id, status="error", error=f"Meta: {e}",
+                       completed_at=datetime.now(timezone.utc))
     except Exception as e:
         # Cualquier error que NO sea de validación ni de Meta (ej. algo real
         # de Playwright/Chromium, o un bug en el armado del PDF). El detalle
         # completo va a los logs del servidor; al usuario solo un mensaje
         # genérico, para no asumir una causa que puede no ser la real.
         print(f"[reports] Error generando el PDF (job {job_id}): {type(e).__name__}: {e}")
-        _JOBS[job_id].update(status="error", error=(
+        _finalizar_job(job_id, status="error", error=(
             "Ocurrió un error inesperado generando el reporte. Intenta de nuevo; "
             "si persiste, revisa los logs del servidor."
-        ))
+        ), completed_at=datetime.now(timezone.utc))
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -217,9 +279,11 @@ async def generate_report(
     Valida todo lo que se puede validar rápido (activo comercial, fechas,
     tokens) y arranca la generación del PDF en segundo plano. Devuelve un
     job_id para consultar el progreso en GET /reports/jobs/{job_id}.
-    """
-    _cleanup_jobs()
 
+    El job queda guardado en generated_reports desde este momento, así que
+    el reporte terminado se puede volver a descargar después desde el
+    historial (GET /reports/history/{account_id}) sin regenerarlo.
+    """
     # El activo comercial debe ser de la organización del usuario
     account = _get_owned_account(data.ad_account_id, current, db)
 
@@ -243,15 +307,22 @@ async def generate_report(
         account, tokens, current, db
     )
 
+    _purgar_reportes_vencidos(db)
+
     job_id = uuid.uuid4().hex
-    _JOBS[job_id] = {
-        "org_id": current.org_id,
-        "status": "processing",
-        "pdf": None,
-        "filename": None,
-        "error": None,
-        "created_at": time.monotonic(),
-    }
+    db.add(GeneratedReport(
+        job_id=job_id,
+        org_id=current.org_id,
+        account_id=account.id,
+        created_by_id=current.id,
+        date_from=data.date_from,
+        date_to=data.date_to,
+        currency=data.currency.value,
+        country_code=data.country_code or "",
+        status="processing",
+    ))
+    db.commit()
+
     asyncio.create_task(_run_report_job(
         job_id, account, tokens, data.date_from, data.date_to, data.budget, data.currency.value,
         data.country_code, source_currency, exchange_rate, attribution_window,
@@ -260,31 +331,130 @@ async def generate_report(
     return ReportJobCreated(job_id=job_id)
 
 
-def _get_owned_job(job_id: str, current: User) -> dict:
-    job = _JOBS.get(job_id)
-    if not job or job["org_id"] != current.org_id:
+def _get_owned_report(job_id: str, current: User, db: Session) -> GeneratedReport:
+    """
+    Trae un reporte SOLO si es de la organización del usuario. No se filtra
+    por quién lo generó: un reporte es de la organización, así que
+    cualquiera del equipo puede descargar lo que ya generó un compañero en
+    vez de tener que rehacerlo.
+    """
+    report = db.scalar(
+        select(GeneratedReport).where(
+            GeneratedReport.job_id == job_id,
+            GeneratedReport.org_id == current.org_id,
+        )
+    )
+    if not report:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job no encontrado")
-    return job
+    return report
 
 
 @router.get("/jobs/{job_id}", response_model=ReportJobStatus)
-def get_report_job(job_id: str, current: User = Depends(get_current_user)):
-    job = _get_owned_job(job_id, current)
+def get_report_job(
+    job_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    report = _get_owned_report(job_id, current, db)
     return ReportJobStatus(
-        job_id=job_id, status=job["status"], error=job["error"], filename=job["filename"],
+        job_id=job_id, status=report.status, error=report.error, filename=report.filename,
     )
 
 
 @router.get("/jobs/{job_id}/pdf")
-def download_report_job(job_id: str, current: User = Depends(get_current_user)):
-    job = _get_owned_job(job_id, current)
-    if job["status"] != "done":
+def download_report_job(
+    job_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    report = _get_owned_report(job_id, current, db)
+    if report.status != "done":
         raise HTTPException(status.HTTP_409_CONFLICT, "El reporte todavía no está listo.")
-    return Response(
-        content=job["pdf"],
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{job["filename"]}"'},
+    if report.pdf is None:
+        # Terminó bien en su momento, pero la purga por antigüedad ya se
+        # llevó los bytes (ver _purgar_reportes_vencidos). Es un 410 y no un
+        # 404: el reporte existió y su entrada sigue en el historial.
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            f"Este reporte ya no está disponible para descargar (se conservan "
+            f"{_HISTORY_RETENTION_DAYS} días). Genéralo de nuevo.",
+        )
+
+    pdf_bytes = report.pdf
+    filename = report.filename
+    db.execute(
+        update(GeneratedReport)
+        .where(GeneratedReport.id == report.id)
+        .values(download_count=GeneratedReport.download_count + 1)
     )
+    db.commit()
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/history/{account_id}", response_model=list[ReportHistoryEntry])
+def get_report_history(
+    account_id: int,
+    limit: int = _HISTORY_DEFAULT_LIMIT,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Los reportes ya generados de un activo comercial, del más reciente al
+    más viejo — para volver a descargar uno sin pagar otra generación
+    completa (traer todo de Meta + renderizar en Chromium).
+
+    Nunca devuelve los bytes del PDF: eso es GET /reports/jobs/{job_id}/pdf.
+    Se piden columnas sueltas y `downloadable` se resuelve como un
+    `pdf IS NOT NULL` en SQL, así listar 20 reportes cuesta lo mismo pesen
+    200 KB o 20 MB cada uno — nunca viaja un byte de PDF hasta aquí.
+    """
+    _get_owned_account(account_id, current, db)  # valida que sea de esta organización
+
+    limit = max(1, min(limit, _HISTORY_MAX_LIMIT))
+    rows = db.execute(
+        select(
+            GeneratedReport.job_id,
+            GeneratedReport.status,
+            GeneratedReport.date_from,
+            GeneratedReport.date_to,
+            GeneratedReport.currency,
+            GeneratedReport.country_code,
+            GeneratedReport.filename,
+            GeneratedReport.size_bytes,
+            GeneratedReport.download_count,
+            GeneratedReport.pdf.isnot(None).label("tiene_pdf"),
+            GeneratedReport.error,
+            GeneratedReport.created_at,
+            GeneratedReport.completed_at,
+        )
+        .where(GeneratedReport.account_id == account_id)
+        .order_by(GeneratedReport.created_at.desc())
+        .limit(limit)
+    ).all()
+
+    return [
+        ReportHistoryEntry(
+            job_id=r.job_id,
+            status=r.status,
+            date_from=r.date_from,
+            date_to=r.date_to,
+            currency=r.currency,
+            country_code=r.country_code or None,
+            filename=r.filename,
+            size_bytes=r.size_bytes,
+            download_count=r.download_count,
+            downloadable=r.status == "done" and r.tiene_pdf,
+            error=r.error,
+            created_at=r.created_at,
+            completed_at=r.completed_at,
+        )
+        for r in rows
+    ]
 
 
 def _summary_cache_query(account_id: int, date_from: date, date_to: date, currency: str, country_key: str):

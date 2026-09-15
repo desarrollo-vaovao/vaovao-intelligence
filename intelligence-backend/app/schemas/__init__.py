@@ -239,6 +239,29 @@ class ReportJobStatus(BaseModel):
     filename: str | None = None
 
 
+class ReportHistoryEntry(BaseModel):
+    """
+    Una entrada del historial de reportes de un activo comercial (ver
+    models.GeneratedReport). `downloadable` es lo que el frontend necesita
+    para decidir si ofrece el botón de descargar: un reporte terminado deja
+    de serlo cuando la purga por antigüedad se lleva sus bytes, y la fila
+    se conserva para que el historial no mienta sobre lo que hubo.
+    """
+    job_id: str
+    status: str            # "processing" | "done" | "error"
+    date_from: date
+    date_to: date
+    currency: str
+    country_code: str | None = None
+    filename: str | None = None
+    size_bytes: int | None = None
+    download_count: int
+    downloadable: bool
+    error: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
 # ── Ad Account ────────────────────────────────────────────────
 class AdAccountCreate(BaseModel):
     """

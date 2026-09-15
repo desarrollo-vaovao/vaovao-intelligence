@@ -73,7 +73,8 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.api.deps import get_current_user  # noqa: E402
-from app.core.database import Base, get_db  # noqa: E402
+from app.core.database import Base, SessionLocal, get_db  # noqa: E402
+from app.core.database import engine as app_engine  # noqa: E402
 from app.core.ratelimit import limiter  # noqa: E402
 
 if USE_POSTGRES_CONTAINER:
@@ -280,6 +281,18 @@ def client(db: Session, auth: _Auth) -> Iterator[TestClient]:
     limiter_was_enabled = limiter.enabled
     limiter.enabled = False
 
+    # `SessionLocal` apunta al motor de `app/core/database.py`, que en
+    # pruebas es OTRA base vacía (cada "sqlite:///:memory:" es una base
+    # distinta, y sobre esa nunca corre create_all). Sustituir solo `get_db`
+    # deja fuera todo lo que legítimamente abre su propia sesión porque
+    # corre DESPUÉS de que la petición terminó y ya no puede reusar la suya:
+    # la generación de un reporte en segundo plano (ver
+    # routes/reports.py::_finalizar_job) y el refresco del Resumen
+    # (_refresh_summary_cache_background). Sin esto, esas escrituras se van
+    # a una base sin tablas y la prueba ve el job colgado en "processing".
+    # En producción ambos caminos comparten base; esto reproduce eso.
+    SessionLocal.configure(bind=db.get_bind())
+
     test_client = TestClient(app)
     try:
         yield test_client
@@ -287,6 +300,7 @@ def client(db: Session, auth: _Auth) -> Iterator[TestClient]:
         test_client.close()
         limiter.enabled = limiter_was_enabled
         app.dependency_overrides.clear()
+        SessionLocal.configure(bind=app_engine)
 
 
 @pytest.fixture()

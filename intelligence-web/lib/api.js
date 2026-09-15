@@ -31,6 +31,33 @@ async function request(path, { method = "GET", body, form } = {}) {
   return data;
 }
 
+// Baja el PDF de un job y dispara la descarga en el navegador. Lo usan los
+// dos caminos que terminan en un archivo: generar un reporte nuevo y
+// volver a bajar uno del historial. No pasa por `request` porque la
+// respuesta es binaria, no JSON.
+async function _descargarPdfDelJob(job_id) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}/reports/jobs/${job_id}/pdf`, { headers });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.detail || "No se pudo descargar el PDF.");
+  }
+
+  const blob = await res.blob();
+  const disp = res.headers.get("Content-Disposition") || "";
+  const match = disp.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : "reporte.pdf";
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  a.remove(); URL.revokeObjectURL(url);
+  return filename;
+}
+
 export const api = {
   login: (email, password) =>
     request("/auth/login", { method: "POST", form: { username: email, password } }),
@@ -85,7 +112,8 @@ export const api = {
   // los de antes y un reporte que termina a los ~5 s se detectaría MÁS TARDE
   // que con el esquema viejo. Así, los reportes rápidos se detectan casi al
   // instante y ninguno queda peor. Sondear cada segundo no cuesta nada: el
-  // endpoint de estado solo lee un dict en memoria.
+  // endpoint de estado lee una sola fila por su índice y NO trae el PDF
+  // (la columna está diferida en el modelo justamente por este bucle).
   generateReport: async (body, { onProgress } = {}) => {
     const { job_id } = await request("/reports/generate", { method: "POST", body });
 
@@ -102,29 +130,24 @@ export const api = {
       throw new Error(job.error || "No se pudo generar el reporte.");
     }
 
-    const headers = {};
-    const token = getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${BASE}/reports/jobs/${job_id}/pdf`, { headers });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data?.detail || "No se pudo descargar el PDF.");
-    }
-
-    const blob = await res.blob();
-    const disp = res.headers.get("Content-Disposition") || "";
-    const match = disp.match(/filename="?([^"]+)"?/);
-    const filename = match ? match[1] : "reporte.pdf";
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click();
-    a.remove(); URL.revokeObjectURL(url);
-    return filename;
+    return _descargarPdfDelJob(job_id);
   },
   checkAccess: (account_id) => request("/reports/check-access", { method: "POST", body: { account_id } }),
   reportSummary: (body) => request("/reports/summary", { method: "POST", body }),
+
+  // Reportes ya generados de un activo comercial, del más nuevo al más
+  // viejo. No trae los PDF: cada entrada dice si todavía se puede
+  // descargar (`downloadable`) y con eso se llama a downloadReport.
+  reportHistory: (accountId, limit) => {
+    const params = limit ? `?limit=${limit}` : "";
+    return request(`/reports/history/${accountId}${params}`);
+  },
+
+  // Vuelve a bajar un reporte YA generado, sin regenerarlo: es el mismo
+  // archivo que quedó guardado, así que no cuesta ni una llamada a Meta ni
+  // un render de Chromium. Comparte el cuerpo con generateReport a través
+  // de _descargarPdfDelJob.
+  downloadReport: (job_id) => _descargarPdfDelJob(job_id),
 
   fbStatus: () => request("/auth/facebook/status"),
   fbLogin: () => request("/auth/facebook/login"),

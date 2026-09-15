@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     String, ForeignKey, DateTime, Boolean, Enum, JSON, Text, Index, Float, Date, Integer,
-    UniqueConstraint,
+    LargeBinary, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -302,6 +302,88 @@ class CampaignDailyMetric(Base):
     reach: Mapped[int] = mapped_column(Integer, default=0)
     clicks: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class GeneratedReport(Base):
+    """
+    Historial de reportes PDF por activo comercial: cada generación queda
+    guardada y se puede volver a descargar sin regenerarla.
+
+    POR QUÉ EXISTE
+    Antes un reporte terminado vivía en un diccionario en memoria del
+    proceso (`_JOBS` en routes/reports.py) con 30 minutos de vida. Eso
+    tenía dos costos: un despliegue o un reinicio a media mañana borraba
+    todos los PDF ya generados, y pedir de nuevo el mismo reporte de ayer
+    obligaba a rehacer el trabajo COMPLETO — traer todo de Meta y volver a
+    renderizar en Chromium. Generar es la parte cara; volver a descargar
+    algo que ya se generó debería ser gratis.
+
+    La fila se crea al arrancar la generación (status "processing") y la
+    misma fila se completa al terminar, así que el historial y el estado
+    del job son la misma cosa: `job_id` es el identificador público que ya
+    consulta el frontend, y sobrevive a un reinicio del servidor.
+
+    EL PDF VIVE EN LA BASE, NO EN DISCO
+    Railway no garantiza disco persistente entre despliegues, así que un
+    archivo en /tmp se pierde igual que la memoria. Guardar los bytes en
+    Postgres mantiene el historial en el único lugar que sí sobrevive, sin
+    sumar S3 (credenciales, otro servicio que puede fallar) por un volumen
+    que hoy es de decenas de reportes al mes. `purgar_reportes_vencidos`
+    acota lo que eso puede crecer.
+
+    NO SE DEDUPLICA POR PARÁMETROS
+    Dos personas pueden pedir el mismo activo, mismo período y misma
+    moneda y esperar PDF distintos: el presupuesto, las observaciones y
+    las métricas elegidas por campaña son de cada quien, no de Meta — el
+    mismo motivo por el que ReportSummaryCache los deja fuera de su llave
+    y los sobrepone al leer. Devolver el reporte de otra persona porque
+    "coincide el período" le entregaría sus comentarios a alguien más.
+    """
+    __tablename__ = "generated_reports"
+    __table_args__ = (
+        Index("idx_generated_report_account", "account_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Identificador público (hex de uuid4). Es lo que el frontend ya usa en
+    # /reports/jobs/{job_id}; se conserva para no exponer un id secuencial
+    # ni tener que cambiar el frontend.
+    job_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("ad_accounts.id", ondelete="CASCADE"), index=True)
+    # Quién lo generó. Queda en NULL si esa persona se da de baja: el
+    # reporte sigue siendo de la organización y el resto del equipo debe
+    # poder descargarlo igual (mismo criterio que LeadAudit, migración 0003).
+    created_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Parámetros con los que se pidió — para que el historial se pueda leer
+    # ("quincena del 1 al 15, en quetzales") sin abrir el PDF.
+    date_from: Mapped[date] = mapped_column(Date)
+    date_to: Mapped[date] = mapped_column(Date)
+    currency: Mapped[str] = mapped_column(String(3))
+    # "" cuando el reporte no filtra por país, igual que en las cachés.
+    country_code: Mapped[str] = mapped_column(String(2), default="")
+
+    status: Mapped[str] = mapped_column(String(12), default="processing")  # processing | done | error
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # NULL mientras se genera, si falló, o si ya se purgó por antigüedad
+    # (la fila se conserva para que el historial no mienta sobre lo que
+    # hubo; ver _purgar_reportes_vencidos en routes/reports.py).
+    #
+    # deferred: es la única columna pesada de la tabla (varios MB con las
+    # imágenes de los anuncios incrustadas). Sin esto, consultar el ESTADO
+    # de un job —algo que el frontend hace en bucle mientras se genera—
+    # arrastraría el PDF entero desde Postgres en cada vuelta. Solo se lee
+    # cuando alguien de verdad lo descarga.
+    pdf: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    download_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ClientPage(Base):
