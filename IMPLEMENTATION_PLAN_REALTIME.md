@@ -724,6 +724,11 @@ export default function Dashboard() {
 ### **FASE 6: Persistencia y Histórico en BD (Semana 3-4)**
 Guardar snapshots para reportes históricos.
 
+---
+
+### **FASE 6.5: Reportería Optimizada - Sin Esperas (Semana 4-5)**
+Generar reportes en background desde caché, descargar al instante.
+
 #### Tarea 6.1: Modelo para histórico de métricas
 **Archivo:** `intelligence-backend/app/models/__init__.py` (agregar)
 
