@@ -62,6 +62,14 @@ export default function ReportesPage() {
   const [campaignSearch, setCampaignSearch] = useState("");
   const [expandedCampaignId, setExpandedCampaignId] = useState(null);
 
+  // Reportes ya generados de este activo. Volver a bajar uno no cuesta ni
+  // una llamada a Meta ni un render de Chromium: el archivo ya está
+  // guardado (ver models.GeneratedReport en el backend).
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [downloadingJob, setDownloadingJob] = useState(null);
+
   useEffect(() => {
     api.reportStatus().then(setStatus).catch((e) => setErr(e.message));
     // Período inicial: la quincena actual
@@ -126,6 +134,39 @@ export default function ReportesPage() {
     }
   }
 
+  async function cargarHistorial(id) {
+    setLoadingHistory(true);
+    setHistoryError("");
+    try {
+      setHistory(await api.reportHistory(id));
+    } catch (e) {
+      setHistoryError(e.message);
+      setHistory([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  // Vuelve a bajar un reporte del historial. No pasa por `generate()` a
+  // propósito: ese camino arranca un job nuevo (Meta + Chromium) y aquí el
+  // archivo ya existe, así que es solo la descarga.
+  async function descargarDelHistorial(jobId) {
+    setErr(""); setInfo(""); setDownloadingJob(jobId);
+    try {
+      const filename = await api.downloadReport(jobId);
+      setInfo(`Reporte descargado: ${filename}`);
+      if (accountId) cargarHistorial(accountId);  // refresca el contador de descargas
+    } catch (e) {
+      setErr(e.message);
+      // Un 410 significa que la retención ya se llevó el archivo. Recargar
+      // deja la fila marcada como no descargable en vez de seguir
+      // ofreciendo un botón que ya no puede funcionar.
+      if (accountId) cargarHistorial(accountId);
+    } finally {
+      setDownloadingJob(null);
+    }
+  }
+
   function openCustomize() {
     setShowCustomize(true);
     if (campaignsPreview.length === 0) {
@@ -157,7 +198,12 @@ export default function ReportesPage() {
     setCountryCode("");
     setCountries([]);
     setCountriesError("");
-    if (accountId) cargarPaises(accountId);
+    setHistory([]);
+    setHistoryError("");
+    if (accountId) {
+      cargarPaises(accountId);
+      cargarHistorial(accountId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
@@ -225,7 +271,13 @@ export default function ReportesPage() {
       setInfo(`Reporte descargado: ${filename}`);
     } catch (e) {
       setErr(e.message);
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+      // Tanto si salió bien como si falló: la generación ya dejó su fila
+      // en el historial y hay que mostrarla. Un intento fallido también
+      // aparece ahí, con su error — así queda claro que se intentó.
+      if (accountId) cargarHistorial(accountId);
+    }
   }
 
   const TIPOS = [
@@ -429,6 +481,17 @@ export default function ReportesPage() {
           </button>
         </div>
 
+        {accountId && (
+          <ReportHistoryPanel
+            entries={history}
+            loading={loadingHistory}
+            error={historyError}
+            downloadingJob={downloadingJob}
+            onDownload={descargarDelHistorial}
+            onRetry={() => cargarHistorial(accountId)}
+          />
+        )}
+
         {showCustomize && (
           <CustomizeReportModal
             campaigns={campaignsPreview}
@@ -449,6 +512,169 @@ export default function ReportesPage() {
         )}
       </div>
     </Shell>
+  );
+}
+
+// ── Historial de reportes ────────────────────────────────────────
+const MESES_CORTOS = [
+  "ene", "feb", "mar", "abr", "may", "jun",
+  "jul", "ago", "sep", "oct", "nov", "dic",
+];
+
+// "2026-01-01" → "1 ene". Se parte el string a mano en vez de usar
+// new Date("2026-01-01"): eso lo interpreta como UTC medianoche y en
+// cualquier zona al oeste (la nuestra) se muestra el día ANTERIOR — el
+// período "1 al 15" se vería como "31 dic al 14 ene".
+function diaCorto(iso) {
+  const [, mes, dia] = iso.split("-").map(Number);
+  return `${dia} ${MESES_CORTOS[mes - 1]}`;
+}
+
+function periodoLegible(desde, hasta) {
+  const [anioDesde] = desde.split("-").map(Number);
+  const [anioHasta] = hasta.split("-").map(Number);
+  const sufijo = anioDesde === anioHasta ? ` ${anioHasta}` : "";
+  return `${diaCorto(desde)} – ${diaCorto(hasta)}${sufijo}`;
+}
+
+function generadoHace(iso) {
+  // El backend serializa en UTC; el navegador lo pasa a la hora local.
+  const cuando = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
+  const minutos = Math.round((Date.now() - cuando.getTime()) / 60000);
+  if (minutos < 1) return "hace un momento";
+  if (minutos < 60) return `hace ${minutos} min`;
+  const horas = Math.round(minutos / 60);
+  if (horas < 24) return `hace ${horas} h`;
+  const dias = Math.round(horas / 24);
+  if (dias === 1) return "ayer";
+  if (dias < 30) return `hace ${dias} días`;
+  // Más de un mes: la fecha exacta. Se arma con el mismo mes corto que el
+  // resto del panel en vez de toLocaleDateString(), que sin locale sigue el
+  // idioma del navegador y colaba un "2/27/2026" en una interfaz en español.
+  return `${cuando.getDate()} ${MESES_CORTOS[cuando.getMonth()]} ${cuando.getFullYear()}`;
+}
+
+function pesoLegible(bytes) {
+  if (!bytes) return "";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
+}
+
+/**
+ * Los reportes ya generados de este activo comercial.
+ *
+ * POR QUÉ ESTÁ AQUÍ
+ * Generar es la parte cara (traer todo de Meta y renderizar el PDF en
+ * Chromium); volver a bajar algo que ya se generó no cuesta nada. Sin
+ * esta lista, la única forma de recuperar el reporte de la quincena
+ * pasada era volver a generarlo completo — y con varias personas
+ * haciendo eso a la vez, pagándolo varias veces.
+ */
+function ReportHistoryPanel({ entries, loading, error, downloadingJob, onDownload, onRetry }) {
+  return (
+    <div className="card" style={{ padding: 24, marginTop: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div>
+          <h2 style={{ fontSize: 13, margin: 0 }}>Reportes generados</h2>
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: "3px 0 0" }}>
+            Vuelve a descargarlos sin generarlos de nuevo.
+          </p>
+        </div>
+        {loading && <span className="loading-dots"><span /><span /><span /></span>}
+      </div>
+
+      {error && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11, color: "var(--error)" }}>
+            No se pudo cargar el historial: {error}
+          </span>
+          <button type="button" className="btn btn-ghost" onClick={onRetry} style={{ fontSize: 11 }}>
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {!error && !loading && entries.length === 0 && (
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: 0 }}>
+          Todavía no se ha generado ningún reporte de este activo.
+        </p>
+      )}
+
+      {entries.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {entries.map((r) => {
+            const bajando = downloadingJob === r.job_id;
+            return (
+              <div
+                key={r.job_id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "10px 0", borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500 }}>
+                    {periodoLegible(r.date_from, r.date_to)}
+                    <span style={{ color: "var(--muted2)", fontWeight: 400 }}>
+                      {" · "}{r.currency === "GTQ" ? "Q" : "$"}
+                      {r.country_code ? ` · ${r.country_code}` : ""}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                    {generadoHace(r.created_at)}
+                    {r.size_bytes ? ` · ${pesoLegible(r.size_bytes)}` : ""}
+                    {r.download_count > 0 ? ` · ${r.download_count} descarga${r.download_count === 1 ? "" : "s"}` : ""}
+                  </div>
+                </div>
+
+                {r.status === "processing" && (
+                  <span className="badge badge-neutral">
+                    Generando<span className="loading-dots"><span /><span /><span /></span>
+                  </span>
+                )}
+
+                {r.status === "error" && (
+                  <span className="badge badge-warn" title={r.error || ""}>Falló</span>
+                )}
+
+                {r.status === "done" && !r.downloadable && (
+                  // La retención del backend ya se llevó el archivo. Se
+                  // deja la entrada visible para no borrar el registro de
+                  // que ese reporte existió, pero sin botón que no funcione.
+                  <span className="badge badge-neutral" title="Los reportes se conservan 90 días.">
+                    Expirado
+                  </span>
+                )}
+
+                {r.status === "done" && r.downloadable && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => onDownload(r.job_id)}
+                    disabled={bajando}
+                    style={{ fontSize: 11, flexShrink: 0 }}
+                  >
+                    {bajando ? (
+                      <>Bajando<span className="loading-dots"><span /><span /><span /></span></>
+                    ) : (
+                      <>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" strokeWidth="1.8">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        Descargar
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
